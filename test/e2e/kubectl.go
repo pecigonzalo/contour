@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package e2e
 
@@ -22,6 +21,8 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
 )
 
@@ -43,12 +44,13 @@ func (k *Kubectl) StartKubectlPortForward(localPort, containerPort int, namespac
 	if err != nil {
 		return nil, err
 	}
+	// Wait until port-forward to be up and running.
+	gomega.Eventually(session).Should(gbytes.Say("Forwarding from"))
 	return session, nil
 }
 
-func (k *Kubectl) StopKubectlPortForward(cmd *gexec.Session) error {
+func (k *Kubectl) StopKubectlPortForward(cmd *gexec.Session) {
 	// Default timeout of 1s produces test flakes,
 	// a minute should be more than enough to avoid them.
 	cmd.Terminate().Wait(time.Minute)
-	return nil
 }

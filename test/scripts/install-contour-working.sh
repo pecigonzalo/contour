@@ -23,8 +23,6 @@ set -o nounset
 readonly KIND=${KIND:-kind}
 readonly KUBECTL=${KUBECTL:-kubectl}
 
-readonly LOAD_PREBUILT_IMAGE=${LOAD_PREBUILT_IMAGE:-false}
-
 readonly CLUSTERNAME=${CLUSTERNAME:-contour-e2e}
 readonly WAITTIME=${WAITTIME:-5m}
 
@@ -41,42 +39,24 @@ kind::cluster::load::docker() {
         "$@"
 }
 
-kind::cluster::load::archive() {
-    ${KIND} load image-archive \
-        --name "${CLUSTERNAME}" \
-        "$@"
-}
-
 if ! kind::cluster::exists "$CLUSTERNAME" ; then
     echo "cluster $CLUSTERNAME does not exist"
     exit 2
 fi
 
-# Wrap sed to deal with GNU and BSD sed flags.
-run::sed() {
-    local -r vers="$(sed --version < /dev/null 2>&1 | grep -q GNU && echo gnu || echo bsd)"
-    case "$vers" in
-        gnu) sed -i "$@" ;;
-        *) sed -i '' "$@" ;;
-    esac
-}
+# Set (pseudo) random image tag to trigger restarts at every deployment.
+# TODO: Come up with a scheme that doesn't fill up the dev environment with randomly-tagged images.
+VERSION="v$$"
 
-if [ "${LOAD_PREBUILT_IMAGE}" = "true" ]; then
-    IMAGE_FILE=$(ls ${REPO}/image/contour-*.tar)
-    VERSION=$(echo ${IMAGE_FILE} | sed -E 's/.*-(.*).tar/\1/')
-    kind::cluster::load::archive ${IMAGE_FILE}
-else
-    # Build the current version of Contour.
-    VERSION="v$$"
-    make -C ${REPO} container IMAGE=ghcr.io/projectcontour/contour VERSION=$VERSION
+# Build the image.
+make -C ${REPO} container IMAGE=ghcr.io/projectcontour/contour VERSION=${VERSION}
 
-    # Push the Contour build image into the cluster.
-    kind::cluster::load::docker ghcr.io/projectcontour/contour:${VERSION}
-fi
-
+# Push the Contour build image into the cluster.
+kind::cluster::load::docker ghcr.io/projectcontour/contour:${VERSION}
 
 # Install Contour
 ${KUBECTL} apply -f ${REPO}/examples/contour/00-common.yaml
+${KUBECTL} apply -f ${REPO}/examples/contour/01-contour-config.yaml
 ${KUBECTL} apply -f ${REPO}/examples/contour/01-crds.yaml
 ${KUBECTL} apply -f ${REPO}/examples/contour/02-rbac.yaml
 ${KUBECTL} apply -f ${REPO}/examples/contour/02-role-contour.yaml
@@ -87,122 +67,14 @@ for file in ${REPO}/examples/contour/02-job-certgen.yaml ${REPO}/examples/contou
   # Set image pull policy to IfNotPresent so kubelet will use the
   # images that we loaded onto the node, rather than trying to pull
   # them from the registry.
-  run::sed \
-    "-es|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|" \
-    "$file"
-
   # Set the image tag to $VERSION to unambiguously use the image
   # we built above.
-  run::sed \
+  sed \
+    "-es|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|" \
     "-es|image: ghcr.io/projectcontour/contour:.*$|image: ghcr.io/projectcontour/contour:${VERSION}|" \
-    "$file"
-
-  ${KUBECTL} apply -f "$file"
+    "$file" | \
+  ${KUBECTL} apply -f -
 done
-
-# The Contour pod won't schedule until this ConfigMap is created, since it's mounted as a volume.
-# This is ok to create the config after the Contour deployment.
-${KUBECTL} apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: contour
-  namespace: projectcontour
-data:
-  contour.yaml: |
-    gateway:
-      controllerName: projectcontour.io/ingress-controller
-      name: contour
-      namespace: projectcontour
-    rateLimitService:
-      extensionService: projectcontour/ratelimit
-      domain: contour
-      failOpen: false
-    tls:
-      fallback-certificate:
-        name: fallback-cert
-        namespace: projectcontour
-EOF
-
-# Install fallback cert
-
-${KUBECTL} apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: selfsigned
-spec:
-  selfSigned: {}
-EOF
-
-${KUBECTL} apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: fallback-cert
-  namespace: projectcontour
-spec:
-  dnsNames:
-  - fallback.projectcontour.io
-  secretName: fallback-cert
-  issuerRef:
-    name: selfsigned
-    kind: ClusterIssuer
-EOF
-
-${KUBECTL} apply -f - <<EOF
-apiVersion: projectcontour.io/v1
-kind: TLSCertificateDelegation
-metadata:
-  name: fallback-cert
-  namespace: projectcontour
-spec:
-  delegations:
-  - secretName: fallback-cert
-    targetNamespaces:
-    - "*"
-EOF
-
-# Wait for the fallback certificate to issue.
-${KUBECTL} wait --timeout="${WAITTIME}" -n projectcontour certificates/fallback-cert --for=condition=Ready
-
-# Define some rate limiting policies to correspond to
-# testsuite/httpproxy/020-global-rate-limiting.yaml.
-${KUBECTL} apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ratelimit-config
-  namespace: projectcontour
-data:
-  ratelimit-config.yaml: |
-    domain: contour
-    descriptors:
-      - key: generic_key
-        value: vhostlimit
-        rate_limit:
-          unit: hour
-          requests_per_unit: 1
-      - key: route_limit_key
-        value: routelimit
-        rate_limit:
-          unit: hour
-          requests_per_unit: 1
-      - key: generic_key
-        value: tlsvhostlimit
-        rate_limit:
-          unit: hour
-          requests_per_unit: 1
-      - key: generic_key
-        value: tlsroutelimit
-        rate_limit:
-          unit: hour
-          requests_per_unit: 1
-EOF
-
-# Create the ratelimit deployment, service and extension service.
-${KUBECTL} apply -f ${REPO}/examples/ratelimit/02-ratelimit.yaml
-${KUBECTL} apply -f ${REPO}/examples/ratelimit/03-ratelimit-extsvc.yaml
 
 # Wait for Contour and Envoy to report "Ready" status.
 ${KUBECTL} wait --timeout="${WAITTIME}" -n projectcontour -l app=contour deployments --for=condition=Available

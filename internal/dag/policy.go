@@ -21,16 +21,18 @@ import (
 	"strings"
 	"time"
 
-	networking_v1 "k8s.io/api/networking/v1"
-	gatewayapi_v1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
-
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/internal/annotation"
-	"github.com/projectcontour/contour/internal/timeout"
 	"github.com/sirupsen/logrus"
+	networking_v1 "k8s.io/api/networking/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/utils/ptr"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+	"github.com/projectcontour/contour/internal/annotation"
+	"github.com/projectcontour/contour/internal/timeout"
 )
 
 const (
@@ -55,21 +57,24 @@ const (
 	LoadBalancerPolicyRequestHash = "RequestHash"
 )
 
+// match "%REQ(<X-Foo-Bar>)%"
+var hostRewriteHeaderRegex = regexp.MustCompile(`%REQ\(([A-Za-z0-9-]+)\)%`)
+
 // retryOn transforms a slice of retry on values to a comma-separated string.
 // CRD validation ensures that all retry on values are valid.
-func retryOn(ro []contour_api_v1.RetryOn) string {
-	if len(ro) == 0 {
+func retryOn(ron []contour_v1.RetryOn) string {
+	if len(ron) == 0 {
 		return "5xx"
 	}
 
-	ss := make([]string, len(ro))
-	for i, value := range ro {
+	ss := make([]string, len(ron))
+	for i, value := range ron {
 		ss[i] = string(value)
 	}
 	return strings.Join(ss, ",")
 }
 
-func retryPolicy(rp *contour_api_v1.RetryPolicy) *RetryPolicy {
+func retryPolicy(rp *contour_v1.RetryPolicy) *RetryPolicy {
 	if rp == nil {
 		return nil
 	}
@@ -84,19 +89,31 @@ func retryPolicy(rp *contour_api_v1.RetryPolicy) *RetryPolicy {
 		perTryTimeout = timeout.DurationSetting(perTryDuration)
 	}
 
+	numRetries := rp.NumRetries
+	// If set to -1, then retries set to 0. If set to 0 or
+	// not supplied, the value is set to the Envoy default of 1.
+	// Otherwise the value supplied is returned.
+	// CRD validation guarantees -1 is the minimum value.
+	switch rp.NumRetries {
+	case -1:
+		numRetries = 0
+	case 1, 0:
+		numRetries = 1
+	}
+
 	return &RetryPolicy{
 		RetryOn:              retryOn(rp.RetryOn),
 		RetriableStatusCodes: rp.RetriableStatusCodes,
-		NumRetries:           max(1, uint32(rp.NumRetries)),
+		NumRetries:           uint32(numRetries), //nolint:gosec // disable G115
 		PerTryTimeout:        perTryTimeout,
 	}
 }
 
-func headersPolicyService(defaultPolicy *HeadersPolicy, policy *contour_api_v1.HeadersPolicy, dynamicHeaders map[string]string) (*HeadersPolicy, error) {
+func headersPolicyService(defaultPolicy *HeadersPolicy, policy *contour_v1.HeadersPolicy, allowHostRewrite bool, dynamicHeaders map[string]string) (*HeadersPolicy, error) {
 	if defaultPolicy == nil {
-		return headersPolicyRoute(policy, false, dynamicHeaders)
+		return headersPolicyRoute(policy, allowHostRewrite, dynamicHeaders)
 	}
-	userPolicy, err := headersPolicyRoute(policy, false, dynamicHeaders)
+	userPolicy, err := headersPolicyRoute(policy, allowHostRewrite, dynamicHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +127,18 @@ func headersPolicyService(defaultPolicy *HeadersPolicy, policy *contour_api_v1.H
 	for k, v := range defaultPolicy.Set {
 		key := http.CanonicalHeaderKey(k)
 		if key == "Host" {
-			return nil, fmt.Errorf("rewriting %q header is not supported", key)
+			if !allowHostRewrite {
+				return nil, fmt.Errorf("rewriting %q header is not supported", key)
+			}
+			if len(userPolicy.HostRewrite) == 0 {
+				// check for the hostRewriteHeader on the service. Return error if set since this
+				// is not supported on envoy.
+				if HostRewriteHeader := extractHostRewriteHeaderValue(v); HostRewriteHeader != "" {
+					return nil, fmt.Errorf("rewriting %q host header with dynamic value is not supported on service", key)
+				}
+				userPolicy.HostRewrite = v
+			}
+			continue
 		}
 		if msgs := validation.IsHTTPHeaderName(key); len(msgs) != 0 {
 			return nil, fmt.Errorf("invalid set header %q: %v", key, msgs)
@@ -138,13 +166,14 @@ func headersPolicyService(defaultPolicy *HeadersPolicy, policy *contour_api_v1.H
 	return userPolicy, nil
 }
 
-func headersPolicyRoute(policy *contour_api_v1.HeadersPolicy, allowHostRewrite bool, dynamicHeaders map[string]string) (*HeadersPolicy, error) {
+func headersPolicyRoute(policy *contour_v1.HeadersPolicy, allowHostRewrite bool, dynamicHeaders map[string]string) (*HeadersPolicy, error) {
 	if policy == nil {
 		return nil, nil
 	}
 
 	set := make(map[string]string, len(policy.Set))
 	hostRewrite := ""
+	hostRewriteHeader := ""
 	for _, entry := range policy.Set {
 		key := http.CanonicalHeaderKey(entry.Name)
 		if _, ok := set[key]; ok {
@@ -153,6 +182,10 @@ func headersPolicyRoute(policy *contour_api_v1.HeadersPolicy, allowHostRewrite b
 		if key == "Host" {
 			if !allowHostRewrite {
 				return nil, fmt.Errorf("rewriting %q header is not supported", key)
+			}
+			if extractedHostRewriteHeader := extractHostRewriteHeaderValue(entry.Value); extractedHostRewriteHeader != "" {
+				hostRewriteHeader = http.CanonicalHeaderKey(extractedHostRewriteHeader)
+				continue
 			}
 			hostRewrite = entry.Value
 			continue
@@ -184,52 +217,59 @@ func headersPolicyRoute(policy *contour_api_v1.HeadersPolicy, allowHostRewrite b
 	}
 
 	return &HeadersPolicy{
-		Set:         set,
-		HostRewrite: hostRewrite,
-		Remove:      rl,
+		Set:               set,
+		HostRewrite:       hostRewrite,
+		HostRewriteHeader: hostRewriteHeader,
+		Remove:            rl,
 	}, nil
 }
 
-// headersPolicyGatewayAPI builds a *HeaderPolicy for the supplied HTTPRequestHeaderFilter.
-// TODO: Take care about the order of operators once https://github.com/kubernetes-sigs/gateway-api/issues/480 was solved.
-func headersPolicyGatewayAPI(hf *gatewayapi_v1alpha1.HTTPRequestHeaderFilter) (*HeadersPolicy, error) {
-	set, add := make(map[string]string, len(hf.Set)), make(map[string]string, len(hf.Add))
-	hostRewrite := ""
-	errlist := []error{}
-	for k, v := range hf.Set {
-		key := http.CanonicalHeaderKey(k)
-		if _, ok := set[key]; ok {
-			errlist = append(errlist, fmt.Errorf("duplicate header addition: %q", key))
-			continue
-		}
-		if key == "Host" {
-			hostRewrite = v
-			continue
-		}
-		if msgs := validation.IsHTTPHeaderName(key); len(msgs) != 0 {
-			errlist = append(errlist, fmt.Errorf("invalid set header %q: %v", key, msgs))
-			continue
-		}
-		set[key] = escapeHeaderValue(v, nil)
-	}
-	for k, v := range hf.Add {
-		key := http.CanonicalHeaderKey(k)
-		if _, ok := add[key]; ok {
-			errlist = append(errlist, fmt.Errorf("duplicate header addition: %q", key))
-			continue
-		}
-		if key == "Host" {
-			hostRewrite = v
-			continue
-		}
-		if msgs := validation.IsHTTPHeaderName(key); len(msgs) != 0 {
-			errlist = append(errlist, fmt.Errorf("invalid add header %q: %v", key, msgs))
-			continue
-		}
-		add[key] = escapeHeaderValue(v, nil)
+// extractHostRewriteHeaderValue returns the value of the header
+func extractHostRewriteHeaderValue(s string) string {
+	matches := hostRewriteHeaderRegex.FindStringSubmatch(s)
+
+	if len(matches) == 2 {
+		return strings.TrimSpace(matches[1])
 	}
 
-	remove := sets.NewString()
+	return ""
+}
+
+// headersPolicyGatewayAPI builds a *HeaderPolicy for the supplied HTTPHeaderFilter.
+// TODO: Take care about the order of operators once https://github.com/kubernetes-sigs/gateway-api/issues/480 was solved.
+func headersPolicyGatewayAPI(hf *gatewayapi_v1.HTTPHeaderFilter, headerPolicyType string) (*HeadersPolicy, error) {
+	var (
+		remove      = sets.NewString()
+		hostRewrite = ""
+		errlist     = []error{}
+	)
+
+	addOrSetHeader := func(headers []gatewayapi_v1.HTTPHeader, op string) map[string]string {
+		m := make(map[string]string, len(headers))
+
+		for _, header := range headers {
+			key := http.CanonicalHeaderKey(string(header.Name))
+			if _, ok := m[key]; ok {
+				errlist = append(errlist, fmt.Errorf("duplicate header addition: %q", key))
+				continue
+			}
+			if key == "Host" && (headerPolicyType == string(gatewayapi_v1.HTTPRouteFilterRequestHeaderModifier) ||
+				headerPolicyType == string(gatewayapi_v1.GRPCRouteFilterRequestHeaderModifier)) {
+				hostRewrite = header.Value
+				continue
+			}
+			if msgs := validation.IsHTTPHeaderName(key); len(msgs) != 0 {
+				errlist = append(errlist, fmt.Errorf("invalid %s header %q: %v", op, key, msgs))
+				continue
+			}
+			m[key] = escapeHeaderValue(header.Value, nil)
+		}
+		return m
+	}
+
+	set := addOrSetHeader(hf.Set, "set")
+	add := addOrSetHeader(hf.Add, "add")
+
 	for _, k := range hf.Remove {
 		key := http.CanonicalHeaderKey(k)
 		if remove.Has(key) {
@@ -266,7 +306,7 @@ func escapeHeaderValue(value string, dynamicHeaders map[string]string) string {
 	if !strings.Contains(value, "%") {
 		return value
 	}
-	escapedValue := strings.Replace(value, "%", "%%", -1)
+	escapedValue := strings.ReplaceAll(value, "%", "%%")
 	for dynamicVar, dynamicVal := range dynamicHeaders {
 		escapedValue = strings.ReplaceAll(escapedValue, "%%"+dynamicVar+"%%", dynamicVal)
 	}
@@ -299,9 +339,61 @@ func escapeHeaderValue(value string, dynamicHeaders map[string]string) string {
 		escapedValue = strings.ReplaceAll(escapedValue, "%%"+envoyVar+"%%", "%"+envoyVar+"%")
 	}
 	// REQ(header-name)
-	var validReqEnvoyVar = regexp.MustCompile(`%(%REQ\([\w-]+\)%)%`)
+	validReqEnvoyVar := regexp.MustCompile(`%(%REQ\(:?[\w-]+(\?:?[\w-]+)?\)(:\d+)?%)%`)
 	escapedValue = validReqEnvoyVar.ReplaceAllString(escapedValue, "$1")
 	return escapedValue
+}
+
+func cookieRewritePolicies(policies []contour_v1.CookieRewritePolicy) ([]CookieRewritePolicy, error) {
+	validPolicies := make([]CookieRewritePolicy, 0, len(policies))
+	cookieNames := map[string]struct{}{}
+	for _, p := range policies {
+		if _, exists := cookieNames[p.Name]; exists {
+			return nil, fmt.Errorf("duplicate cookie rewrite rule for cookie %q", p.Name)
+		}
+		cookieNames[p.Name] = struct{}{}
+		policiesSet := 0
+		var path *string
+		if p.PathRewrite != nil {
+			policiesSet++
+			path = ptr.To(p.PathRewrite.Value)
+		}
+		var domain *string
+		if p.DomainRewrite != nil {
+			policiesSet++
+			domain = ptr.To(p.DomainRewrite.Value)
+		}
+		// We use a uint here since a pointer to bool cannot be
+		// distingiuished when unset or false in golang text templates.
+		// 0 means unset.
+		secure := uint(0)
+		if p.Secure != nil {
+			policiesSet++
+			// Increment to indicate it has been set.
+			secure++
+			if *p.Secure {
+				// Increment to indicate it is true.
+				secure++
+			}
+		}
+		if p.SameSite != nil {
+			policiesSet++
+		}
+		if policiesSet == 0 {
+			return nil, fmt.Errorf("no attributes rewritten for cookie %q", p.Name)
+		}
+		validPolicies = append(validPolicies, CookieRewritePolicy{
+			Name:     p.Name,
+			Path:     path,
+			Domain:   domain,
+			Secure:   secure,
+			SameSite: p.SameSite,
+		})
+	}
+	if len(validPolicies) == 0 {
+		return nil, nil
+	}
+	return validPolicies, nil
 }
 
 // ingressRetryPolicy builds a RetryPolicy from ingress annotations.
@@ -313,9 +405,7 @@ func ingressRetryPolicy(ingress *networking_v1.Ingress, log logrus.FieldLogger) 
 
 	// if there is a non empty retry-on annotation, build a RetryPolicy manually.
 	rp := &RetryPolicy{
-		RetryOn: retryOn,
-		// TODO(dfc) k8s.NumRetries may parse as 0, which is inconsistent with
-		// retryPolicy()'s default value of 1.
+		RetryOn:    retryOn,
 		NumRetries: annotation.NumRetries(ingress),
 	}
 
@@ -330,7 +420,7 @@ func ingressRetryPolicy(ingress *networking_v1.Ingress, log logrus.FieldLogger) 
 	return rp
 }
 
-func ingressTimeoutPolicy(ingress *networking_v1.Ingress, log logrus.FieldLogger) TimeoutPolicy {
+func ingressTimeoutPolicy(ingress *networking_v1.Ingress, log logrus.FieldLogger) RouteTimeoutPolicy {
 	response := annotation.ContourAnnotation(ingress, "response-timeout")
 	if len(response) == 0 {
 		// Note: due to a misunderstanding the name of the annotation is
@@ -338,64 +428,98 @@ func ingressTimeoutPolicy(ingress *networking_v1.Ingress, log logrus.FieldLogger
 		// the response body.
 		response = annotation.ContourAnnotation(ingress, "request-timeout")
 		if len(response) == 0 {
-			return TimeoutPolicy{
-				ResponseTimeout: timeout.DefaultSetting(),
-				IdleTimeout:     timeout.DefaultSetting(),
+			return RouteTimeoutPolicy{
+				ResponseTimeout:   timeout.DefaultSetting(),
+				IdleStreamTimeout: timeout.DefaultSetting(),
 			}
 		}
 	}
 	// if the request timeout annotation is present on this ingress
 	// construct and use the HTTPProxy timeout policy logic.
-	tp, err := timeoutPolicy(&contour_api_v1.TimeoutPolicy{
+	tp, _, err := timeoutPolicy(&contour_v1.TimeoutPolicy{
 		Response: response,
-	})
+	}, 0)
 	if err != nil {
 		log.WithError(err).Error("Error parsing response-timeout annotation, using the default value")
-		return TimeoutPolicy{}
+		return RouteTimeoutPolicy{}
 	}
 
 	return tp
 }
 
-func timeoutPolicy(tp *contour_api_v1.TimeoutPolicy) (TimeoutPolicy, error) {
+func timeoutPolicy(tp *contour_v1.TimeoutPolicy, connectTimeout time.Duration) (RouteTimeoutPolicy, ClusterTimeoutPolicy, error) {
 	if tp == nil {
-		return TimeoutPolicy{
-			ResponseTimeout: timeout.DefaultSetting(),
-			IdleTimeout:     timeout.DefaultSetting(),
-		}, nil
+		return RouteTimeoutPolicy{
+				ResponseTimeout:   timeout.DefaultSetting(),
+				IdleStreamTimeout: timeout.DefaultSetting(),
+			}, ClusterTimeoutPolicy{
+				IdleConnectionTimeout: timeout.DefaultSetting(),
+				ConnectTimeout:        connectTimeout,
+			},
+			nil
 	}
 
 	responseTimeout, err := timeout.Parse(tp.Response)
 	if err != nil {
-		return TimeoutPolicy{}, fmt.Errorf("error parsing response timeout: %w", err)
+		return RouteTimeoutPolicy{}, ClusterTimeoutPolicy{}, fmt.Errorf("error parsing response timeout: %w", err)
 	}
 
-	idleTimeout, err := timeout.Parse(tp.Idle)
+	idleStreamTimeout, err := timeout.Parse(tp.Idle)
 	if err != nil {
-		return TimeoutPolicy{}, fmt.Errorf("error parsing idle timeout: %w", err)
+		return RouteTimeoutPolicy{}, ClusterTimeoutPolicy{}, fmt.Errorf("error parsing idle timeout: %w", err)
 	}
 
-	return TimeoutPolicy{
-		ResponseTimeout: responseTimeout,
-		IdleTimeout:     idleTimeout,
-	}, nil
+	idleConnectionTimeout, err := timeout.Parse(tp.IdleConnection)
+	if err != nil {
+		return RouteTimeoutPolicy{}, ClusterTimeoutPolicy{}, fmt.Errorf("error parsing idle connection timeout: %w", err)
+	}
+
+	return RouteTimeoutPolicy{
+			ResponseTimeout:   responseTimeout,
+			IdleStreamTimeout: idleStreamTimeout,
+		}, ClusterTimeoutPolicy{
+			IdleConnectionTimeout: idleConnectionTimeout,
+			ConnectTimeout:        connectTimeout,
+		}, nil
 }
 
-func httpHealthCheckPolicy(hc *contour_api_v1.HTTPHealthCheckPolicy) *HTTPHealthCheckPolicy {
+func httpHealthCheckPolicy(hc *contour_v1.HTTPHealthCheckPolicy) (*HTTPHealthCheckPolicy, error) {
 	if hc == nil {
-		return nil
+		return nil, nil
 	}
+
+	var expectedStatuses []HTTPStatusRange
+
+	for _, statusRange := range hc.ExpectedStatuses {
+		// Note, the status range follow half-open semantics to match
+		// Envoy, so start is inclusive, and end is exclusive, hence
+		// why the difference in allowed values for each.
+
+		if statusRange.Start < 100 || statusRange.Start > 599 {
+			return nil, fmt.Errorf("invalid expected status range: start must be in the range [100, 599]")
+		}
+		if statusRange.End < 101 || statusRange.End > 600 {
+			return nil, fmt.Errorf("invalid expected status range: end must be in the range [101, 600]")
+		}
+
+		expectedStatuses = append(expectedStatuses, HTTPStatusRange{
+			Start: statusRange.Start,
+			End:   statusRange.End,
+		})
+	}
+
 	return &HTTPHealthCheckPolicy{
 		Path:               hc.Path,
 		Host:               hc.Host,
 		Interval:           time.Duration(hc.IntervalSeconds) * time.Second,
 		Timeout:            time.Duration(hc.TimeoutSeconds) * time.Second,
-		UnhealthyThreshold: uint32(hc.UnhealthyThresholdCount),
-		HealthyThreshold:   uint32(hc.HealthyThresholdCount),
-	}
+		UnhealthyThreshold: uint32(hc.UnhealthyThresholdCount), //nolint:gosec // disable G115
+		HealthyThreshold:   uint32(hc.HealthyThresholdCount),   //nolint:gosec // disable G115
+		ExpectedStatuses:   expectedStatuses,
+	}, nil
 }
 
-func tcpHealthCheckPolicy(hc *contour_api_v1.TCPHealthCheckPolicy) *TCPHealthCheckPolicy {
+func tcpHealthCheckPolicy(hc *contour_v1.TCPHealthCheckPolicy) *TCPHealthCheckPolicy {
 	if hc == nil {
 		return nil
 	}
@@ -409,7 +533,7 @@ func tcpHealthCheckPolicy(hc *contour_api_v1.TCPHealthCheckPolicy) *TCPHealthChe
 
 // loadBalancerPolicy returns the load balancer strategy or
 // blank if no valid strategy is supplied.
-func loadBalancerPolicy(lbp *contour_api_v1.LoadBalancerPolicy) string {
+func loadBalancerPolicy(lbp *contour_v1.LoadBalancerPolicy) string {
 	if lbp == nil {
 		return ""
 	}
@@ -421,14 +545,7 @@ func loadBalancerPolicy(lbp *contour_api_v1.LoadBalancerPolicy) string {
 	}
 }
 
-func max(a, b uint32) uint32 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func prefixReplacementsAreValid(replacements []contour_api_v1.ReplacePrefix) (string, error) {
+func prefixReplacementsAreValid(replacements []contour_v1.ReplacePrefix) (string, error) {
 	prefixes := map[string]bool{}
 
 	for _, r := range replacements {
@@ -447,8 +564,8 @@ func prefixReplacementsAreValid(replacements []contour_api_v1.ReplacePrefix) (st
 	return "", nil
 }
 
-func rateLimitPolicy(in *contour_api_v1.RateLimitPolicy) (*RateLimitPolicy, error) {
-	if in == nil || (in.Local == nil && in.Global == nil) {
+func rateLimitPolicy(in *contour_v1.RateLimitPolicy) (*RateLimitPolicy, error) {
+	if in == nil || (in.Local == nil && (in.Global == nil || len(in.Global.Descriptors) == 0)) {
 		return nil, nil
 	}
 
@@ -469,7 +586,7 @@ func rateLimitPolicy(in *contour_api_v1.RateLimitPolicy) (*RateLimitPolicy, erro
 	return rp, nil
 }
 
-func localRateLimitPolicy(in *contour_api_v1.LocalRateLimitPolicy) (*LocalRateLimitPolicy, error) {
+func localRateLimitPolicy(in *contour_v1.LocalRateLimitPolicy) (*LocalRateLimitPolicy, error) {
 	if in == nil {
 		return nil, nil
 	}
@@ -516,8 +633,8 @@ func localRateLimitPolicy(in *contour_api_v1.LocalRateLimitPolicy) (*LocalRateLi
 	return res, nil
 }
 
-func globalRateLimitPolicy(in *contour_api_v1.GlobalRateLimitPolicy) (*GlobalRateLimitPolicy, error) {
-	if in == nil {
+func globalRateLimitPolicy(in *contour_v1.GlobalRateLimitPolicy) (*GlobalRateLimitPolicy, error) {
+	if in == nil || in.Disabled {
 		return nil, nil
 	}
 
@@ -586,7 +703,7 @@ func globalRateLimitPolicy(in *contour_api_v1.GlobalRateLimitPolicy) (*GlobalRat
 // Validates and returns list of hash policies along with lb actual strategy to
 // be used. Will return default strategy and empty list of hash policies if
 // validation fails.
-func loadBalancerRequestHashPolicies(lbp *contour_api_v1.LoadBalancerPolicy, validCond *contour_api_v1.DetailedCondition) ([]RequestHashPolicy, string) {
+func loadBalancerRequestHashPolicies(lbp *contour_v1.LoadBalancerPolicy, validCond *contour_v1.DetailedCondition) ([]RequestHashPolicy, string) {
 	if lbp == nil {
 		return nil, ""
 	}
@@ -601,45 +718,121 @@ func loadBalancerRequestHashPolicies(lbp *contour_api_v1.LoadBalancerPolicy, val
 			}},
 		}, LoadBalancerPolicyCookie
 	case LoadBalancerPolicyRequestHash:
-		rhp := []RequestHashPolicy{}
+		rhps := []RequestHashPolicy{}
 		actualStrategy := strategy
-		// Map of unique header names.
-		headerHashPolicies := map[string]bool{}
+		hashSourceIPSet := false
+		// Set of unique header names.
+		headerHashPolicies := sets.NewString()
+		// Set of unique query parameter names.
+		queryParameterHashPolicies := sets.NewString()
 		for _, hashPolicy := range lbp.RequestHashPolicies {
-			if hashPolicy.HeaderHashOptions == nil {
-				validCond.AddWarningf(contour_api_v1.ConditionTypeSpecError, "IgnoredField",
-					"ignoring invalid nil hash policy options")
-				continue
-			}
-			headerName := http.CanonicalHeaderKey(hashPolicy.HeaderHashOptions.HeaderName)
-			if msgs := validation.IsHTTPHeaderName(headerName); len(msgs) != 0 {
-				validCond.AddWarningf(contour_api_v1.ConditionTypeSpecError, "IgnoredField",
-					"ignoring invalid header hash policy options with invalid header name %q: %v", headerName, msgs)
-				continue
-			}
-			if _, ok := headerHashPolicies[headerName]; ok {
-				validCond.AddWarningf("SpecError", "IgnoredField",
-					"ignoring invalid header hash policy options with duplicated header name %s", headerName)
-				continue
-			}
-			headerHashPolicies[headerName] = true
-
-			rhp = append(rhp, RequestHashPolicy{
+			rhp := RequestHashPolicy{
 				Terminal: hashPolicy.Terminal,
-				HeaderHashOptions: &HeaderHashOptions{
+			}
+
+			// Ensure hashing for exactly one request attribute is set.
+			attrCounter := 0
+			if hashPolicy.HashSourceIP {
+				attrCounter++
+			}
+			if hashPolicy.HeaderHashOptions != nil {
+				attrCounter++
+			}
+			if hashPolicy.QueryParameterHashOptions != nil {
+				attrCounter++
+			}
+			if attrCounter != 1 {
+				validCond.AddWarningf(contour_v1.ConditionTypeSpecError, "IgnoredField",
+					"ignoring invalid request hash policy, must set exactly one of hashSourceIP or headerHashOptions or queryParameterHashOptions")
+				continue
+			}
+
+			if hashPolicy.HashSourceIP {
+				if hashSourceIPSet {
+					validCond.AddWarningf(contour_v1.ConditionTypeSpecError, "IgnoredField",
+						"ignoring invalid request hash policy, hashSourceIP specified multiple times")
+					continue
+				}
+				rhp.HashSourceIP = true
+				hashSourceIPSet = true
+			}
+
+			if hashPolicy.HeaderHashOptions != nil {
+				headerName := http.CanonicalHeaderKey(hashPolicy.HeaderHashOptions.HeaderName)
+				if msgs := validation.IsHTTPHeaderName(headerName); len(msgs) != 0 {
+					validCond.AddWarningf(contour_v1.ConditionTypeSpecError, "IgnoredField",
+						"ignoring invalid header hash policy options with invalid header name %q: %v", headerName, msgs)
+					continue
+				}
+				if headerHashPolicies.Has(headerName) {
+					validCond.AddWarningf("SpecError", "IgnoredField",
+						"ignoring invalid header hash policy options with duplicated header name %s", headerName)
+					continue
+				}
+				headerHashPolicies.Insert(headerName)
+				rhp.HeaderHashOptions = &HeaderHashOptions{
 					HeaderName: headerName,
-				},
-			})
+				}
+			}
+
+			if hashPolicy.QueryParameterHashOptions != nil {
+				// Pretty much everyone assumes that query parameter names are case-insensitive,
+				// but there is no actual standard for that.
+				queryParameter := strings.ToLower(hashPolicy.QueryParameterHashOptions.ParameterName)
+				if queryParameter == "" {
+					validCond.AddWarningf(contour_v1.ConditionTypeSpecError, "IgnoredField",
+						"ignoring invalid query parameter hash policy options with an invalid empty query parameter name")
+					continue
+				}
+				if queryParameterHashPolicies.Has(queryParameter) {
+					validCond.AddWarningf("SpecError", "IgnoredField",
+						"ignoring invalid query parameter hash policy options with duplicated query parameter name %s", queryParameter)
+					continue
+				}
+				queryParameterHashPolicies.Insert(queryParameter)
+				rhp.QueryParameterHashOptions = &QueryParameterHashOptions{
+					ParameterName: queryParameter,
+				}
+			}
+
+			rhps = append(rhps, rhp)
 		}
-		if len(rhp) == 0 {
-			validCond.AddWarningf(contour_api_v1.ConditionTypeSpecError, "IgnoredField",
-				"ignoring invalid header hash policy options, setting load balancer strategy to default %s", LoadBalancerPolicyRoundRobin)
-			rhp = nil
+		if len(rhps) == 0 {
+			validCond.AddWarningf(contour_v1.ConditionTypeSpecError, "IgnoredField",
+				"ignoring invalid request hash policy options, setting load balancer strategy to default %s", LoadBalancerPolicyRoundRobin)
+			rhps = nil
 			actualStrategy = LoadBalancerPolicyRoundRobin
 		}
-		return rhp, actualStrategy
+		return rhps, actualStrategy
 	default:
 		return nil, strategy
 	}
+}
 
+func serviceCircuitBreakerPolicy(s *Service, cb *contour_v1alpha1.CircuitBreakers) *Service {
+	if s == nil {
+		return nil
+	}
+
+	if s.CircuitBreakers.MaxConnections == 0 && cb != nil {
+		s.CircuitBreakers.MaxConnections = cb.MaxConnections
+	}
+
+	if s.CircuitBreakers.MaxPendingRequests == 0 && cb != nil {
+		s.CircuitBreakers.MaxPendingRequests = cb.MaxPendingRequests
+	}
+
+	if s.CircuitBreakers.MaxRequests == 0 && cb != nil {
+		s.CircuitBreakers.MaxRequests = cb.MaxRequests
+	}
+
+	if s.CircuitBreakers.MaxRetries == 0 && cb != nil {
+		s.CircuitBreakers.MaxRetries = cb.MaxRetries
+	}
+
+	if s.CircuitBreakers.PerHostMaxConnections == 0 && cb != nil {
+		s.CircuitBreakers.PerHostMaxConnections = cb.PerHostMaxConnections
+	}
+
+	return s
 }

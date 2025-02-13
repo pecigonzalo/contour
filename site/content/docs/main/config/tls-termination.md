@@ -13,7 +13,11 @@ Contour also follows a "secure first" approach.
 When TLS is enabled for a virtual host, any request to the insecure port is redirected to the secure interface with a 301 redirect.
 Specific routes can be configured to override this behavior and handle insecure requests by enabling the `spec.routes.permitInsecure` parameter on a Route.
 
-The TLS secret must contain keys named tls.crt and tls.key that contain the certificate and private key to use for TLS, e.g.:
+The TLS secret must:
+- be a Secret of type `kubernetes.io/tls`. This means that it must contain keys named `tls.crt` and `tls.key` that contain the certificate and private key to use for TLS, in PEM format.
+
+The TLS secret may also:
+- add any chain CA certificates required for validation into the `tls.crt` PEM bundle. If this is the case, the serving certificate must be the first certificate in the bundle and the intermediate CA certificates must be appended in issuing order.
 
 ```yaml
 # ingress-tls.secret.yaml
@@ -158,8 +162,30 @@ spec:
 ```
 
 The preceding example enables validation by setting the optional `clientValidation` attribute.
-Its mandatory attribute `caSecret` contains a name of an existing Kubernetes Secret that must be of type "Opaque" and have a data key named `ca.crt`.
+Its mandatory attribute `caSecret` contains a name of an existing Kubernetes Secret that must be of type "Opaque" and have only a data key named `ca.crt`.
 The data value of the key `ca.crt` must be a PEM-encoded certificate bundle and it must contain all the trusted CA certificates that are to be used for validating the client certificate.
+If the Opaque Secret also contains one of either `tls.crt` or `tls.key` keys, it will be ignored.
+
+By default, client certificates are required but some applications might support different authentication schemes. In that case you can set the `optionalClientCertificate` field to `true`. A client certificate will be requested, but the connection is allowed to continue if the client does not provide one. If a client certificate is sent, it will be verified according to the other properties, which includes disabling validations if `skipClientCertValidation` is set.
+
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: with-optional-client-auth
+spec:
+  virtualhost:
+    fqdn: www.example.com
+    tls:
+      secretName: secret
+      clientValidation:
+        caSecret: client-root-ca
+        optionalClientCertificate: true
+  routes:
+    - services:
+        - name: s1
+          port: 80
+```
 
 When using external authorization, it may be desirable to use an external authorization server to validate client certificates on requests, rather than the Envoy proxy.
 
@@ -187,6 +213,87 @@ spec:
 In the above example, setting the `skipClientCertValidation` field to `true` will configure Envoy to require client certificates on requests and pass them along to a configured authorization server.
 Failed validation of client certificates by Envoy will be ignored and the `fail_verify_error` [Listener statistic][2] incremented.
 If the `caSecret` field is omitted, Envoy will request but not require client certificates to be present on requests.
+
+Optionally, you can enable certificate revocation check by providing one or more Certificate Revocation Lists (CRLs).
+Attribute `crlSecret` contains a name of an existing Kubernetes Secret that must be of type "Opaque" and have a data key named `crl.pem`.
+The data value of the key `crl.pem` must be one or more PEM-encoded CRLs concatenated together.
+Large CRL lists are not supported since individual Secrets are limited to 1MiB in size.
+
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: with-client-auth-and-crl-check
+spec:
+  virtualhost:
+    fqdn: www.example.com
+    tls:
+      secretName: secret
+      clientValidation:
+        caSecret: client-root-ca
+        crlSecret: client-crl
+  routes:
+    - services:
+        - name: s1
+          port: 80
+```
+
+CRLs must be available from all relevant CAs, including intermediate CAs.
+Otherwise clients will be denied access, since the revocation status cannot be checked for the full certificate chain.
+This behavior can be controlled by `crlOnlyVerifyLeafCert` field.
+If the option is set to `true`, only the certificate at the end of the certificate chain will be subject to validation by CRL.
+
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: with-client-auth-and-crl-check-only-leaf
+spec:
+  virtualhost:
+    fqdn: www.example.com
+    tls:
+      secretName: secret
+      clientValidation:
+        caSecret: client-root-ca
+        crlSecret: client-crl
+        crlOnlyVerifyLeafCert: true
+  routes:
+    - services:
+        - name: s1
+          port: 80
+```
+
+## Client Certificate Details Forwarding
+
+HTTPProxy supports passing certificate data through the `x-forwarded-client-cert` (XFCC) header to let applications use details from client certificates (e.g. Subject, SAN...).
+
+Contour will never forward or append to an existing XFCC header from a client, regardless of whether forwarding client certificate details is enabled. It will always sanitize the request, first dropping the header if present, and then if configured to pass client certificate details, and a client certificate has been presented, then it will add a new XFCC header.
+
+Since the certificate (or the certificate chain) could exceed the web server header size limit, you have the ability to select what specific part of the certificate to expose in the header through the `forwardClientCertificate` field. Read more about the supported values in the [Envoy documentation](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/headers#x-forwarded-client-cert).
+
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: with-client-auth
+spec:
+  virtualhost:
+    fqdn: www.example.com
+    tls:
+      secretName: secret
+      clientValidation:
+        caSecret: client-root-ca
+        forwardClientCertificate:
+          subject: true
+          cert: true
+          chain: true
+          dns: true
+          uri: true
+  routes:
+    - services:
+        - name: s1
+          port: 80
+```
 
 ## TLS Session Proxying
 

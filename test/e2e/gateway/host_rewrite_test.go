@@ -12,67 +12,66 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package gateway
 
 import (
-	. "github.com/onsi/ginkgo"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	gatewayv1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/projectcontour/contour/internal/gatewayapi"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
-func testHostRewrite(namespace string) {
+func testHostRewrite(namespace string, gateway types.NamespacedName) {
 	Specify("host can be rewritten in route filter", func() {
 		t := f.T()
 
 		f.Fixtures.Echo.Deploy(namespace, "echo")
 
-		route := &gatewayv1alpha1.HTTPRoute{
-			ObjectMeta: metav1.ObjectMeta{
+		route := &gatewayapi_v1.HTTPRoute{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "host-rewrite",
-				Labels:    map[string]string{"app": "filter"},
 			},
-			Spec: gatewayv1alpha1.HTTPRouteSpec{
-				Hostnames: []gatewayv1alpha1.Hostname{"hostrewrite.gateway.projectcontour.io"},
-				Gateways: &gatewayv1alpha1.RouteGateways{
-					Allow: gatewayAllowTypePtr(gatewayv1alpha1.GatewayAllowAll),
+			Spec: gatewayapi_v1.HTTPRouteSpec{
+				Hostnames: []gatewayapi_v1.Hostname{"hostrewrite.gateway.projectcontour.io"},
+				CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+					ParentRefs: []gatewayapi_v1.ParentReference{
+						gatewayapi.GatewayParentRef(gateway.Namespace, gateway.Name),
+					},
 				},
-				Rules: []gatewayv1alpha1.HTTPRouteRule{
+				Rules: []gatewayapi_v1.HTTPRouteRule{
 					{
-						Matches: []gatewayv1alpha1.HTTPRouteMatch{
+						Matches: []gatewayapi_v1.HTTPRouteMatch{
 							{
-								Path: &gatewayv1alpha1.HTTPPathMatch{
-									Type:  pathMatchTypePtr(gatewayv1alpha1.PathMatchPrefix),
-									Value: stringPtr("/"),
+								Path: &gatewayapi_v1.HTTPPathMatch{
+									Type:  ptr.To(gatewayapi_v1.PathMatchPathPrefix),
+									Value: ptr.To("/"),
 								},
 							},
 						},
-						Filters: []gatewayv1alpha1.HTTPRouteFilter{
+						Filters: []gatewayapi_v1.HTTPRouteFilter{
 							{
-								Type: gatewayv1alpha1.HTTPRouteFilterRequestHeaderModifier,
-								RequestHeaderModifier: &gatewayv1alpha1.HTTPRequestHeaderFilter{
-									Add: map[string]string{
-										"Host": "rewritten.com",
+								Type: gatewayapi_v1.HTTPRouteFilterRequestHeaderModifier,
+								RequestHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
+									Add: []gatewayapi_v1.HTTPHeader{
+										{Name: gatewayapi_v1.HTTPHeaderName("Host"), Value: "rewritten.com"},
 									},
 								},
 							},
 						},
-						ForwardTo: []gatewayv1alpha1.HTTPRouteForwardTo{
-							{
-								ServiceName: stringPtr("echo"),
-								Port:        portNumPtr(80),
-							},
-						},
+						BackendRefs: gatewayapi.HTTPBackendRef("echo", 80, 1),
 					},
 				},
 			},
 		}
-		f.CreateHTTPRouteAndWaitFor(route, httpRouteAdmitted)
+		require.True(f.T(), f.CreateHTTPRouteAndWaitFor(route, e2e.HTTPRouteAccepted))
 
 		res, ok := f.HTTP.RequestUntil(&e2e.HTTPRequestOpts{
 			Host:      string(route.Spec.Hostnames[0]),

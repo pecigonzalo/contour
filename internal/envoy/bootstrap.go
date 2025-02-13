@@ -20,8 +20,9 @@ import (
 	"net"
 	"os"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/projectcontour/contour/pkg/config"
 )
 
@@ -88,19 +89,32 @@ type BootstrapConfig struct {
 	SkipFilePathCheck bool
 
 	// DNSLookupFamily specifies DNS Resolution Policy to use for Envoy -> Contour cluster name lookup.
-	// Either v4, v6 or auto.
+	// Either v4, v6, all or auto.
 	DNSLookupFamily string
+
+	// MaximumHeapSizeBytes specifies the number of bytes that overload manager allows heap to grow to.
+	// When reaching the set threshold, new connections are denied.
+	MaximumHeapSizeBytes uint64
 }
 
+// GetXdsAddress returns the address configured or defaults to "127.0.0.1"
 func (c *BootstrapConfig) GetXdsAddress() string { return stringOrDefault(c.XDSAddress, "127.0.0.1") }
-func (c *BootstrapConfig) GetXdsGRPCPort() int   { return intOrDefault(c.XDSGRPCPort, 8001) }
+
+// GetXdsGRPCPort returns the port configured or defaults to "8001"
+func (c *BootstrapConfig) GetXdsGRPCPort() int { return intOrDefault(c.XDSGRPCPort, 8001) }
+
+// GetAdminAddress returns the admin socket path configured or defaults to "/admin/admin.sock"
 func (c *BootstrapConfig) GetAdminAddress() string {
 	return stringOrDefault(c.AdminAddress, "/admin/admin.sock")
 }
 func (c *BootstrapConfig) GetAdminPort() int { return intOrDefault(c.AdminPort, 9001) }
+
+// GetAdminAccessLogPath returns the configured access log path or defaults to "/dev/null"
 func (c *BootstrapConfig) GetAdminAccessLogPath() string {
 	return stringOrDefault(c.AdminAccessLogPath, "/dev/null")
 }
+
+// GetDNSLookupFamily returns the configured dns lookup family or defaults to "auto"
 func (c *BootstrapConfig) GetDNSLookupFamily() string {
 	return stringOrDefault(c.DNSLookupFamily, "auto")
 }
@@ -145,6 +159,11 @@ func WriteConfig(filename string, config proto.Message) (err error) {
 		}()
 	}
 
-	m := &jsonpb.Marshaler{OrigName: true}
-	return m.Marshal(out, config)
+	res, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(config)
+	if err != nil {
+		return err
+	}
+
+	_, err = out.Write(res)
+	return err
 }

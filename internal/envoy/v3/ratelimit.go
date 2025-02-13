@@ -14,45 +14,47 @@
 package v3
 
 import (
-	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	ratelimit_config_v3 "github.com/envoyproxy/go-control-plane/envoy/config/ratelimit/v3"
-	envoy_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
-	envoy_config_filter_http_local_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/local_ratelimit/v3"
-	ratelimit_filter_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ratelimit/v3"
-	http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/config/ratelimit/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_filter_http_local_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/local_ratelimit/v3"
+	envoy_filter_http_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ratelimit/v3"
+	envoy_filter_network_http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_type_v3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
-	"github.com/golang/protobuf/ptypes/any"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/envoy"
 	"github.com/projectcontour/contour/internal/protobuf"
 	"github.com/projectcontour/contour/internal/timeout"
-	"google.golang.org/protobuf/types/known/wrapperspb"
-	"k8s.io/apimachinery/pkg/types"
 )
 
-// LocalRateLimitConfig returns a config for the HTTP local rate
+// localRateLimitConfig returns a config for the HTTP local rate
 // limit filter.
-func LocalRateLimitConfig(config *dag.LocalRateLimitPolicy, statPrefix string) *any.Any {
+func localRateLimitConfig(config *dag.LocalRateLimitPolicy, statPrefix string) *anypb.Any {
 	if config == nil {
 		return nil
 	}
 
-	c := &envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+	c := &envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 		StatPrefix: statPrefix,
 		TokenBucket: &envoy_type_v3.TokenBucket{
 			MaxTokens:     config.MaxTokens,
-			TokensPerFill: protobuf.UInt32(config.TokensPerFill),
-			FillInterval:  protobuf.Duration(config.FillInterval),
+			TokensPerFill: wrapperspb.UInt32(config.TokensPerFill),
+			FillInterval:  durationpb.New(config.FillInterval),
 		},
-		ResponseHeadersToAdd: HeaderValueList(config.ResponseHeadersToAdd, false),
-		FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+		ResponseHeadersToAdd: headerValueList(config.ResponseHeadersToAdd, false),
+		FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 			DefaultValue: &envoy_type_v3.FractionalPercent{
 				Numerator:   100,
 				Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 			},
 		},
-		FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+		FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 			DefaultValue: &envoy_type_v3.FractionalPercent{
 				Numerator:   100,
 				Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -62,42 +64,42 @@ func LocalRateLimitConfig(config *dag.LocalRateLimitPolicy, statPrefix string) *
 
 	// Envoy defaults to 429 (Too Many Requests) if this is not specified.
 	if config.ResponseStatusCode > 0 {
-		c.Status = &envoy_type_v3.HttpStatus{Code: envoy_type_v3.StatusCode(config.ResponseStatusCode)}
+		c.Status = &envoy_type_v3.HttpStatus{Code: envoy_type_v3.StatusCode(config.ResponseStatusCode)} //nolint:gosec // disable G115
 	}
 
 	return protobuf.MustMarshalAny(c)
 }
 
 // GlobalRateLimits converts DAG RateLimitDescriptors to Envoy RateLimits.
-func GlobalRateLimits(descriptors []*dag.RateLimitDescriptor) []*envoy_route_v3.RateLimit {
-	var rateLimits []*envoy_route_v3.RateLimit
+func GlobalRateLimits(descriptors []*dag.RateLimitDescriptor) []*envoy_config_route_v3.RateLimit {
+	var rateLimits []*envoy_config_route_v3.RateLimit
 	for _, descriptor := range descriptors {
-		var rl envoy_route_v3.RateLimit
+		var rl envoy_config_route_v3.RateLimit
 
 		for _, entry := range descriptor.Entries {
 			switch {
 			case entry.GenericKey != nil:
-				rl.Actions = append(rl.Actions, &envoy_route_v3.RateLimit_Action{
-					ActionSpecifier: &envoy_route_v3.RateLimit_Action_GenericKey_{
-						GenericKey: &envoy_route_v3.RateLimit_Action_GenericKey{
+				rl.Actions = append(rl.Actions, &envoy_config_route_v3.RateLimit_Action{
+					ActionSpecifier: &envoy_config_route_v3.RateLimit_Action_GenericKey_{
+						GenericKey: &envoy_config_route_v3.RateLimit_Action_GenericKey{
 							DescriptorKey:   entry.GenericKey.Key,
 							DescriptorValue: entry.GenericKey.Value,
 						},
 					},
 				})
 			case entry.HeaderMatch != nil:
-				rl.Actions = append(rl.Actions, &envoy_route_v3.RateLimit_Action{
-					ActionSpecifier: &envoy_route_v3.RateLimit_Action_RequestHeaders_{
-						RequestHeaders: &envoy_route_v3.RateLimit_Action_RequestHeaders{
+				rl.Actions = append(rl.Actions, &envoy_config_route_v3.RateLimit_Action{
+					ActionSpecifier: &envoy_config_route_v3.RateLimit_Action_RequestHeaders_{
+						RequestHeaders: &envoy_config_route_v3.RateLimit_Action_RequestHeaders{
 							HeaderName:    entry.HeaderMatch.HeaderName,
 							DescriptorKey: entry.HeaderMatch.Key,
 						},
 					},
 				})
 			case entry.HeaderValueMatch != nil:
-				rl.Actions = append(rl.Actions, &envoy_route_v3.RateLimit_Action{
-					ActionSpecifier: &envoy_route_v3.RateLimit_Action_HeaderValueMatch_{
-						HeaderValueMatch: &envoy_route_v3.RateLimit_Action_HeaderValueMatch{
+				rl.Actions = append(rl.Actions, &envoy_config_route_v3.RateLimit_Action{
+					ActionSpecifier: &envoy_config_route_v3.RateLimit_Action_HeaderValueMatch_{
+						HeaderValueMatch: &envoy_config_route_v3.RateLimit_Action_HeaderValueMatch{
 							DescriptorValue: entry.HeaderValueMatch.Value,
 							ExpectMatch:     wrapperspb.Bool(entry.HeaderValueMatch.ExpectMatch),
 							Headers:         headerMatcher(entry.HeaderValueMatch.Headers),
@@ -105,9 +107,9 @@ func GlobalRateLimits(descriptors []*dag.RateLimitDescriptor) []*envoy_route_v3.
 					},
 				})
 			case entry.RemoteAddress != nil:
-				rl.Actions = append(rl.Actions, &envoy_route_v3.RateLimit_Action{
-					ActionSpecifier: &envoy_route_v3.RateLimit_Action_RemoteAddress_{
-						RemoteAddress: &envoy_route_v3.RateLimit_Action_RemoteAddress{},
+				rl.Actions = append(rl.Actions, &envoy_config_route_v3.RateLimit_Action{
+					ActionSpecifier: &envoy_config_route_v3.RateLimit_Action_RemoteAddress_{
+						RemoteAddress: &envoy_config_route_v3.RateLimit_Action_RemoteAddress{},
 					},
 				})
 			}
@@ -122,46 +124,52 @@ func GlobalRateLimits(descriptors []*dag.RateLimitDescriptor) []*envoy_route_v3.
 // GlobalRateLimitConfig stores configuration for
 // an HTTP global rate limiting filter.
 type GlobalRateLimitConfig struct {
-	ExtensionService        types.NamespacedName
-	FailOpen                bool
-	Timeout                 timeout.Setting
-	Domain                  string
-	EnableXRateLimitHeaders bool
+	ExtensionService            types.NamespacedName
+	SNI                         string
+	FailOpen                    bool
+	Timeout                     timeout.Setting
+	Domain                      string
+	EnableXRateLimitHeaders     bool
+	EnableResourceExhaustedCode bool
 }
 
 // GlobalRateLimitFilter returns a configured HTTP global rate limit filter,
 // or nil if config is nil.
-func GlobalRateLimitFilter(config *GlobalRateLimitConfig) *http.HttpFilter {
+func GlobalRateLimitFilter(config *GlobalRateLimitConfig) *envoy_filter_network_http_connection_manager_v3.HttpFilter {
 	if config == nil {
 		return nil
 	}
 
-	return &http.HttpFilter{
+	return &envoy_filter_network_http_connection_manager_v3.HttpFilter{
 		Name: wellknown.HTTPRateLimit,
-		ConfigType: &http.HttpFilter_TypedConfig{
-			TypedConfig: protobuf.MustMarshalAny(&ratelimit_filter_v3.RateLimit{
+		ConfigType: &envoy_filter_network_http_connection_manager_v3.HttpFilter_TypedConfig{
+			TypedConfig: protobuf.MustMarshalAny(&envoy_filter_http_ratelimit_v3.RateLimit{
 				Domain:          config.Domain,
 				Timeout:         envoy.Timeout(config.Timeout),
 				FailureModeDeny: !config.FailOpen,
-				RateLimitService: &ratelimit_config_v3.RateLimitServiceConfig{
-					GrpcService: &envoy_core_v3.GrpcService{
-						TargetSpecifier: &envoy_core_v3.GrpcService_EnvoyGrpc_{
-							EnvoyGrpc: &envoy_core_v3.GrpcService_EnvoyGrpc{
-								ClusterName: dag.ExtensionClusterName(config.ExtensionService),
-							},
-						},
-					},
-					TransportApiVersion: envoy_core_v3.ApiVersion_V3,
+				RateLimitService: &envoy_config_ratelimit_v3.RateLimitServiceConfig{
+					GrpcService:         grpcService(dag.ExtensionClusterName(config.ExtensionService), config.SNI, timeout.DefaultSetting()),
+					TransportApiVersion: envoy_config_core_v3.ApiVersion_V3,
 				},
-				EnableXRatelimitHeaders: enableXRateLimitHeaders(config.EnableXRateLimitHeaders),
+				EnableXRatelimitHeaders:        enableXRateLimitHeaders(config.EnableXRateLimitHeaders),
+				RateLimitedAsResourceExhausted: config.EnableResourceExhaustedCode,
 			}),
 		},
 	}
 }
 
-func enableXRateLimitHeaders(enable bool) ratelimit_filter_v3.RateLimit_XRateLimitHeadersRFCVersion {
+func enableXRateLimitHeaders(enable bool) envoy_filter_http_ratelimit_v3.RateLimit_XRateLimitHeadersRFCVersion {
 	if enable {
-		return ratelimit_filter_v3.RateLimit_DRAFT_VERSION_03
+		return envoy_filter_http_ratelimit_v3.RateLimit_DRAFT_VERSION_03
 	}
-	return ratelimit_filter_v3.RateLimit_OFF
+	return envoy_filter_http_ratelimit_v3.RateLimit_OFF
+}
+
+// rateLimitPerRoute returns a per-route config to configure vhost rate limits.
+func rateLimitPerRoute(r *dag.RateLimitPerRoute) *anypb.Any {
+	return protobuf.MustMarshalAny(
+		&envoy_filter_http_ratelimit_v3.RateLimitPerRoute{
+			VhRateLimits: envoy_filter_http_ratelimit_v3.RateLimitPerRoute_VhRateLimitsOptions(r.VhRateLimits),
+		},
+	)
 }

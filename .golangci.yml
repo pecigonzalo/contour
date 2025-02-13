@@ -1,23 +1,23 @@
 run:
   timeout: 10m
-  skip-files:
-    - apis/projectcontour/v1/kubeconditions.go # copy-pasted from k8s.io/apimachinery, has invalid header
 
 linters:
   enable:
   - bodyclose
-  - gofmt
+  - gofumpt
   - goimports
+  - gci
+  - importas
   - revive
   - gosec
   - misspell
   - unconvert
   - unparam
   - goheader
-
-# TODO(jpeach): enable these later:
-#  - gocyclo
-#  - gocognit
+  - gocritic
+  - forbidigo
+  - testifylint
+  - ginkgolinter
 
 linters-settings:
   misspell:
@@ -25,40 +25,94 @@ linters-settings:
     - clas
     - cancelled
     locale: US
-  gofmt:
-    simplify: true
   unparam:
     check-exported: false
   goheader:
     template-path: ./hack/license-template.txt
+  forbidigo:
+    forbid:
+      - http.DefaultTransport
+  revive:
+    rules:
+    - name: blank-imports
+    - name: context-as-argument
+    - name: context-keys-type
+    - name: dot-imports
+    - name: empty-block
+    - name: error-naming
+    - name: error-return
+    - name: error-strings
+    - name: errorf
+    - name: exported
+    - name: increment-decrement
+    - name: indent-error-flow
+    - name: package-comments
+    - name: range
+    - name: receiver-naming
+    - name: redefines-builtin-id
+    - name: superfluous-else
+    - name: time-naming
+    - name: unexported-return
+    - name: unreachable-code
+    - name: unused-parameter
+    - name: use-any
+    - name: var-declaration
+    - name: var-naming
+  testifylint:
+    enable-all: true
+  ginkgolinter:
+    forbid-focus-container: true
+  gofumpt:
+    extra-rules: true
+  gci:
+    custom-order: true
+    sections:
+    - standard
+    - default
+    - prefix(github.com/projectcontour/contour)
+  importas:
+    no-unaliased: true
+    alias:
+    - pkg: github.com/projectcontour/contour/apis/projectcontour/(v\w+)
+      alias: contour_${1}
+    - pkg: sigs.k8s.io/gateway-api/apis/(v\w+)
+      alias: gatewayapi_${1}
+    - pkg: k8s.io.*/apis?/(\w+)/(v\w+)
+      alias: ${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/config/(\w+)/(v\w+)
+      alias: envoy_config_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/service/(\w+)/(v\w+)
+      alias: envoy_service_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/filters/(\w+)/(\w+)/(v\w+)
+      alias: envoy_filter_${1}_${2}_${3}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/(\w+)/(v\w+)
+      alias: envoy_transport_socket_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/compression/(\w+)/(\w+)/(v\w+)
+      alias: envoy_compression_${1}_${2}_${3}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/(\w+)/(v\w+)
+      alias: envoy_access_logger_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/formatter/(\w+)/(v\w+)
+      alias: envoy_formatter_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/(\w+)/(v\w+)
+      alias: envoy_upstream_${1}_${2}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/type/(v\w+)
+      alias: envoy_type_${1}
+    - pkg: github.com/envoyproxy/go-control-plane/envoy/type/matcher/(v\w+)
+      alias: envoy_matcher_${1}
 
 issues:
-  exclude:
-  # TODO(jpeach): exclude unparam warnings about functions that always receive
-  # the same arguments. We should clean those up some time.
-  - always receives
+  max-issues-per-linter: 0
+  max-same-issues: 0
   exclude-rules:
+  - linters: ["unparam"]
+    text: "always receives"
   - path: zz_generated
-    linters:
-    - goimports
-  # TODO(youngnick): Disable the deprecation warnings, because of the "github.com/golang/protobuf/proto"
-  # libraries. We can't stop using them yet, because they move from Proto v1 to V2
-  # And we can't nolint them by line, because https://github.com/golangci/golangci-lint/issues/741
-  - linters:
-    - staticcheck
-    text: "SA1019: package github.com/golang/protobuf"
-  - linters:
-    - golint
-    text: "var `ingress_https` should be `ingressHTTPS`"
-  - linters:
-    - golint
-    text: "var `ingress_http` should be `ingressHTTP`"
-  - linters:
-    - golint
-    text: "returns unexported type"
-  - linters:
-    - golint
-    text: "don't use ALL_CAPS in Go names; use CamelCase"
+    linters: ["goimports"]
   - path: test/e2e
-    linters:
-      - bodyclose
+    linters: ["bodyclose"]
+  - path: test/e2e
+    linters: ["revive"]
+    text: "should not use dot imports"
+  - path: test/e2e
+    linters: ["testifylint"]
+    text: "require must only be used in the goroutine running the test function"

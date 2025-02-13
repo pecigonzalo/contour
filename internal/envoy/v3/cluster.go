@@ -18,27 +18,32 @@ import (
 	"strings"
 	"time"
 
-	envoy_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	envoy_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
-	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_upstream_http_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
+	envoy_type_v3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/envoy"
 	"github.com/projectcontour/contour/internal/protobuf"
+	"github.com/projectcontour/contour/internal/timeout"
 	"github.com/projectcontour/contour/internal/xds"
-	"k8s.io/apimachinery/pkg/types"
 )
 
-func clusterDefaults() *envoy_cluster_v3.Cluster {
-	return &envoy_cluster_v3.Cluster{
-		ConnectTimeout: protobuf.Duration(250 * time.Millisecond),
+func clusterDefaults() *envoy_config_cluster_v3.Cluster {
+	return &envoy_config_cluster_v3.Cluster{
+		ConnectTimeout: durationpb.New(2 * time.Second),
 		CommonLbConfig: ClusterCommonLBConfig(),
 		LbPolicy:       lbPolicy(dag.LoadBalancerPolicyRoundRobin),
 	}
 }
 
-// Cluster creates new envoy_cluster_v3.Cluster from dag.Cluster.
-func Cluster(c *dag.Cluster) *envoy_cluster_v3.Cluster {
+// Cluster creates new envoy_config_cluster_v3.Cluster from dag.Cluster.
+func (e *EnvoyGen) Cluster(c *dag.Cluster) *envoy_config_cluster_v3.Cluster {
 	service := c.Upstream
 	cluster := clusterDefaults()
 
@@ -48,15 +53,25 @@ func Cluster(c *dag.Cluster) *envoy_cluster_v3.Cluster {
 	cluster.HealthChecks = edshealthcheck(c)
 	cluster.DnsLookupFamily = parseDNSLookupFamily(c.DNSLookupFamily)
 
+	if c.PerConnectionBufferLimitBytes != nil {
+		cluster.PerConnectionBufferLimitBytes = protobuf.UInt32OrNil(*c.PerConnectionBufferLimitBytes)
+	}
+
 	switch len(service.ExternalName) {
 	case 0:
 		// external name not set, cluster will be discovered via EDS
-		cluster.ClusterDiscoveryType = ClusterDiscoveryType(envoy_cluster_v3.Cluster_EDS)
-		cluster.EdsClusterConfig = edsconfig("contour", service)
+		cluster.ClusterDiscoveryType = ClusterDiscoveryType(envoy_config_cluster_v3.Cluster_EDS)
+		cluster.EdsClusterConfig = e.edsconfig(service)
 	default:
 		// external name set, use hard coded DNS name
-		cluster.ClusterDiscoveryType = ClusterDiscoveryType(envoy_cluster_v3.Cluster_STRICT_DNS)
-		cluster.LoadAssignment = StaticClusterLoadAssignment(service)
+		// external name set to LOGICAL_DNS when user selects the ALL loookup family
+		clusterDiscoveryType := ClusterDiscoveryType(envoy_config_cluster_v3.Cluster_STRICT_DNS)
+		if cluster.DnsLookupFamily == envoy_config_cluster_v3.Cluster_ALL {
+			clusterDiscoveryType = ClusterDiscoveryType(envoy_config_cluster_v3.Cluster_LOGICAL_DNS)
+		}
+
+		cluster.ClusterDiscoveryType = clusterDiscoveryType
+		cluster.LoadAssignment = externalNameClusterLoadAssignment(service)
 	}
 
 	// Drain connections immediately if using healthchecks and the endpoint is known to be removed
@@ -64,45 +79,64 @@ func Cluster(c *dag.Cluster) *envoy_cluster_v3.Cluster {
 		cluster.IgnoreHealthOnHostRemoval = true
 	}
 
-	if envoy.AnyPositive(service.MaxConnections, service.MaxPendingRequests, service.MaxRequests, service.MaxRetries) {
-		cluster.CircuitBreakers = &envoy_cluster_v3.CircuitBreakers{
-			Thresholds: []*envoy_cluster_v3.CircuitBreakers_Thresholds{{
-				MaxConnections:     protobuf.UInt32OrNil(service.MaxConnections),
-				MaxPendingRequests: protobuf.UInt32OrNil(service.MaxPendingRequests),
-				MaxRequests:        protobuf.UInt32OrNil(service.MaxRequests),
-				MaxRetries:         protobuf.UInt32OrNil(service.MaxRetries),
-			}},
-		}
-	}
+	applyCircuitBreakers(cluster, service.CircuitBreakers)
 
+	httpVersion := HTTPVersionAuto
 	switch c.Protocol {
 	case "tls":
 		cluster.TransportSocket = UpstreamTLSTransportSocket(
-			UpstreamTLSContext(
+			e.UpstreamTLSContext(
 				c.UpstreamValidation,
 				c.SNI,
 				c.ClientCertificate,
+				c.UpstreamTLS,
 			),
 		)
 	case "h2":
-		cluster.TypedExtensionProtocolOptions = http2ProtocolOptions()
+		httpVersion = HTTPVersion2
 		cluster.TransportSocket = UpstreamTLSTransportSocket(
-			UpstreamTLSContext(
+			e.UpstreamTLSContext(
 				c.UpstreamValidation,
 				c.SNI,
 				c.ClientCertificate,
+				c.UpstreamTLS,
 				"h2",
 			),
 		)
 	case "h2c":
-		cluster.TypedExtensionProtocolOptions = http2ProtocolOptions()
+		httpVersion = HTTPVersion2
+	}
+
+	if c.TimeoutPolicy.ConnectTimeout > time.Duration(0) {
+		cluster.ConnectTimeout = durationpb.New(c.TimeoutPolicy.ConnectTimeout)
+	}
+
+	cluster.TypedExtensionProtocolOptions = protocolOptions(httpVersion, c.TimeoutPolicy.IdleConnectionTimeout, c.MaxRequestsPerConnection)
+
+	if c.SlowStartConfig != nil {
+		switch cluster.LbPolicy {
+		case envoy_config_cluster_v3.Cluster_LEAST_REQUEST:
+			cluster.LbConfig = &envoy_config_cluster_v3.Cluster_LeastRequestLbConfig_{
+				LeastRequestLbConfig: &envoy_config_cluster_v3.Cluster_LeastRequestLbConfig{
+					SlowStartConfig: slowStartConfig(c.SlowStartConfig),
+				},
+			}
+		case envoy_config_cluster_v3.Cluster_ROUND_ROBIN:
+			cluster.LbConfig = &envoy_config_cluster_v3.Cluster_RoundRobinLbConfig_{
+				RoundRobinLbConfig: &envoy_config_cluster_v3.Cluster_RoundRobinLbConfig{
+					SlowStartConfig: slowStartConfig(c.SlowStartConfig),
+				},
+			}
+		default:
+			// Slow start is only supported for round robin and weighted least request.
+		}
 	}
 
 	return cluster
 }
 
-// ExtensionCluster builds a envoy_cluster_v3.Cluster struct for the given extension service.
-func ExtensionCluster(ext *dag.ExtensionCluster) *envoy_cluster_v3.Cluster {
+// ExtensionCluster builds a envoy_config_cluster_v3.Cluster struct for the given extension service.
+func (e *EnvoyGen) ExtensionCluster(ext *dag.ExtensionCluster) *envoy_config_cluster_v3.Cluster {
 	cluster := clusterDefaults()
 
 	// The Envoy cluster name has already been set.
@@ -120,47 +154,86 @@ func ExtensionCluster(ext *dag.ExtensionCluster) *envoy_cluster_v3.Cluster {
 	cluster.LbPolicy = lbPolicy(ext.LoadBalancerPolicy)
 
 	// Cluster will be discovered via EDS.
-	cluster.ClusterDiscoveryType = ClusterDiscoveryType(envoy_cluster_v3.Cluster_EDS)
-	cluster.EdsClusterConfig = &envoy_cluster_v3.Cluster_EdsClusterConfig{
-		EdsConfig:   ConfigSource("contour"),
+	cluster.ClusterDiscoveryType = ClusterDiscoveryType(envoy_config_cluster_v3.Cluster_EDS)
+	cluster.EdsClusterConfig = &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
+		EdsConfig:   e.GetConfigSource(),
 		ServiceName: ext.Upstream.ClusterName,
 	}
 
 	// TODO(jpeach): Externalname service support in https://github.com/projectcontour/contour/issues/2875
 
+	http2Version := HTTPVersionAuto
 	switch ext.Protocol {
 	case "h2":
-		cluster.TypedExtensionProtocolOptions = http2ProtocolOptions()
+		http2Version = HTTPVersion2
 		cluster.TransportSocket = UpstreamTLSTransportSocket(
-			UpstreamTLSContext(
+			e.UpstreamTLSContext(
 				ext.UpstreamValidation,
 				ext.SNI,
 				ext.ClientCertificate,
+				ext.UpstreamTLS,
 				"h2",
 			),
 		)
 	case "h2c":
-		cluster.TypedExtensionProtocolOptions = http2ProtocolOptions()
+		http2Version = HTTPVersion2
 	}
+
+	if ext.ClusterTimeoutPolicy.ConnectTimeout > time.Duration(0) {
+		cluster.ConnectTimeout = durationpb.New(ext.ClusterTimeoutPolicy.ConnectTimeout)
+	}
+	cluster.TypedExtensionProtocolOptions = protocolOptions(http2Version, ext.ClusterTimeoutPolicy.IdleConnectionTimeout, nil)
+
+	applyCircuitBreakers(cluster, ext.CircuitBreakers)
 
 	return cluster
 }
 
-// StaticClusterLoadAssignment creates a *envoy_endpoint_v3.ClusterLoadAssignment pointing to the external DNS address of the service
-func StaticClusterLoadAssignment(service *dag.Service) *envoy_endpoint_v3.ClusterLoadAssignment {
-	addr := SocketAddress(service.ExternalName, int(service.Weighted.ServicePort.Port))
-	return &envoy_endpoint_v3.ClusterLoadAssignment{
-		Endpoints: Endpoints(addr),
-		ClusterName: xds.ClusterLoadAssignmentName(
-			types.NamespacedName{Name: service.Weighted.ServiceName, Namespace: service.Weighted.ServiceNamespace},
-			service.Weighted.ServicePort.Name,
-		),
+func applyCircuitBreakers(cluster *envoy_config_cluster_v3.Cluster, settings dag.CircuitBreakers) {
+	if envoy.AnyPositive(settings.MaxConnections, settings.MaxPendingRequests, settings.MaxRequests, settings.MaxRetries, settings.PerHostMaxConnections) {
+		cluster.CircuitBreakers = &envoy_config_cluster_v3.CircuitBreakers{
+			Thresholds: []*envoy_config_cluster_v3.CircuitBreakers_Thresholds{{
+				MaxConnections:     protobuf.UInt32OrNil(settings.MaxConnections),
+				MaxPendingRequests: protobuf.UInt32OrNil(settings.MaxPendingRequests),
+				MaxRequests:        protobuf.UInt32OrNil(settings.MaxRequests),
+				MaxRetries:         protobuf.UInt32OrNil(settings.MaxRetries),
+				TrackRemaining:     true,
+			}},
+			PerHostThresholds: []*envoy_config_cluster_v3.CircuitBreakers_Thresholds{{
+				MaxConnections: protobuf.UInt32OrNil(settings.PerHostMaxConnections),
+				TrackRemaining: true,
+			}},
+		}
 	}
 }
 
-func edsconfig(cluster string, service *dag.Service) *envoy_cluster_v3.Cluster_EdsClusterConfig {
-	return &envoy_cluster_v3.Cluster_EdsClusterConfig{
-		EdsConfig: ConfigSource(cluster),
+// DNSNameCluster builds a envoy_config_cluster_v3.Cluster for the given *dag.DNSNameCluster.
+func (e *EnvoyGen) DNSNameCluster(c *dag.DNSNameCluster) *envoy_config_cluster_v3.Cluster {
+	cluster := clusterDefaults()
+
+	cluster.Name = envoy.DNSNameClusterName(c)
+	cluster.DnsLookupFamily = parseDNSLookupFamily(c.DNSLookupFamily)
+
+	clusterType := envoy_config_cluster_v3.Cluster_STRICT_DNS
+	if cluster.DnsLookupFamily == envoy_config_cluster_v3.Cluster_ALL {
+		clusterType = envoy_config_cluster_v3.Cluster_LOGICAL_DNS
+	}
+	cluster.ClusterDiscoveryType = ClusterDiscoveryType(clusterType)
+
+	var transportSocket *envoy_config_core_v3.TransportSocket
+	if c.Scheme == "https" {
+		transportSocket = UpstreamTLSTransportSocket(e.UpstreamTLSContext(c.UpstreamValidation, c.Address, nil, c.UpstreamTLS))
+	}
+
+	cluster.LoadAssignment = ClusterLoadAssignment(envoy.DNSNameClusterName(c), SocketAddress(c.Address, c.Port))
+	cluster.TransportSocket = transportSocket
+
+	return cluster
+}
+
+func (e *EnvoyGen) edsconfig(service *dag.Service) *envoy_config_cluster_v3.Cluster_EdsClusterConfig {
+	return &envoy_config_cluster_v3.Cluster_EdsClusterConfig{
+		EdsConfig: e.GetConfigSource(),
 		ServiceName: xds.ClusterLoadAssignmentName(
 			types.NamespacedName{Name: service.Weighted.ServiceName, Namespace: service.Weighted.ServiceNamespace},
 			service.Weighted.ServicePort.Name,
@@ -168,88 +241,132 @@ func edsconfig(cluster string, service *dag.Service) *envoy_cluster_v3.Cluster_E
 	}
 }
 
-func lbPolicy(strategy string) envoy_cluster_v3.Cluster_LbPolicy {
+func lbPolicy(strategy string) envoy_config_cluster_v3.Cluster_LbPolicy {
 	switch strategy {
 	case dag.LoadBalancerPolicyWeightedLeastRequest:
-		return envoy_cluster_v3.Cluster_LEAST_REQUEST
+		return envoy_config_cluster_v3.Cluster_LEAST_REQUEST
 	case dag.LoadBalancerPolicyRandom:
-		return envoy_cluster_v3.Cluster_RANDOM
+		return envoy_config_cluster_v3.Cluster_RANDOM
 	case dag.LoadBalancerPolicyCookie, dag.LoadBalancerPolicyRequestHash:
-		return envoy_cluster_v3.Cluster_RING_HASH
+		return envoy_config_cluster_v3.Cluster_RING_HASH
 	default:
-		return envoy_cluster_v3.Cluster_ROUND_ROBIN
+		return envoy_config_cluster_v3.Cluster_ROUND_ROBIN
 	}
 }
 
-func edshealthcheck(c *dag.Cluster) []*envoy_core_v3.HealthCheck {
+func edshealthcheck(c *dag.Cluster) []*envoy_config_core_v3.HealthCheck {
 	if c.HTTPHealthCheckPolicy == nil && c.TCPHealthCheckPolicy == nil {
 		return nil
 	}
 
 	if c.HTTPHealthCheckPolicy != nil {
-		return []*envoy_core_v3.HealthCheck{
+		return []*envoy_config_core_v3.HealthCheck{
 			httpHealthCheck(c),
 		}
 	}
 
-	return []*envoy_core_v3.HealthCheck{
+	return []*envoy_config_core_v3.HealthCheck{
 		tcpHealthCheck(c),
 	}
 }
 
-// ClusterCommonLBConfig creates a *envoy_cluster_v3.Cluster_CommonLbConfig with HealthyPanicThreshold disabled.
-func ClusterCommonLBConfig() *envoy_cluster_v3.Cluster_CommonLbConfig {
-	return &envoy_cluster_v3.Cluster_CommonLbConfig{
-		HealthyPanicThreshold: &envoy_type.Percent{ // Disable HealthyPanicThreshold
+// ClusterCommonLBConfig creates a *envoy_config_cluster_v3.Cluster_CommonLbConfig with HealthyPanicThreshold disabled.
+func ClusterCommonLBConfig() *envoy_config_cluster_v3.Cluster_CommonLbConfig {
+	return &envoy_config_cluster_v3.Cluster_CommonLbConfig{
+		HealthyPanicThreshold: &envoy_type_v3.Percent{ // Disable HealthyPanicThreshold
 			Value: 0,
 		},
 	}
 }
 
-// ConfigSource returns a *envoy_core_v3.ConfigSource for cluster.
-func ConfigSource(cluster string) *envoy_core_v3.ConfigSource {
-	return &envoy_core_v3.ConfigSource{
-		ResourceApiVersion: envoy_core_v3.ApiVersion_V3,
-		ConfigSourceSpecifier: &envoy_core_v3.ConfigSource_ApiConfigSource{
-			ApiConfigSource: &envoy_core_v3.ApiConfigSource{
-				ApiType:             envoy_core_v3.ApiConfigSource_GRPC,
-				TransportApiVersion: envoy_core_v3.ApiVersion_V3,
-				GrpcServices: []*envoy_core_v3.GrpcService{{
-					TargetSpecifier: &envoy_core_v3.GrpcService_EnvoyGrpc_{
-						EnvoyGrpc: &envoy_core_v3.GrpcService_EnvoyGrpc{
-							ClusterName: cluster,
-						},
-					},
-				}},
-			},
-		},
-	}
-}
-
 // ClusterDiscoveryType returns the type of a ClusterDiscovery as a Cluster_type.
-func ClusterDiscoveryType(t envoy_cluster_v3.Cluster_DiscoveryType) *envoy_cluster_v3.Cluster_Type {
-	return &envoy_cluster_v3.Cluster_Type{Type: t}
+func ClusterDiscoveryType(t envoy_config_cluster_v3.Cluster_DiscoveryType) *envoy_config_cluster_v3.Cluster_Type {
+	return &envoy_config_cluster_v3.Cluster_Type{Type: t}
 }
 
-// ClusterDiscoveryTypeForAddress returns the type of a ClusterDiscovery as a Cluster_type.
+// clusterDiscoveryTypeForAddress returns the type of a ClusterDiscovery as a Cluster_type.
 // If the provided address is an IP, overrides the type to STATIC, otherwise uses the
 // passed in type.
-func ClusterDiscoveryTypeForAddress(address string, t envoy_cluster_v3.Cluster_DiscoveryType) *envoy_cluster_v3.Cluster_Type {
+func clusterDiscoveryTypeForAddress(address string, t envoy_config_cluster_v3.Cluster_DiscoveryType) *envoy_config_cluster_v3.Cluster_Type {
 	clusterType := t
 	if net.ParseIP(address) != nil {
-		clusterType = envoy_cluster_v3.Cluster_STATIC
+		clusterType = envoy_config_cluster_v3.Cluster_STATIC
 	}
-	return &envoy_cluster_v3.Cluster_Type{Type: clusterType}
+	return &envoy_config_cluster_v3.Cluster_Type{Type: clusterType}
 }
 
-// parseDNSLookupFamily parses the dnsLookupFamily string into a envoy_cluster_v3.Cluster_DnsLookupFamily
-func parseDNSLookupFamily(value string) envoy_cluster_v3.Cluster_DnsLookupFamily {
-
+// parseDNSLookupFamily parses the dnsLookupFamily string into a envoy_config_cluster_v3.Cluster_DnsLookupFamily
+func parseDNSLookupFamily(value string) envoy_config_cluster_v3.Cluster_DnsLookupFamily {
 	switch value {
 	case "v4":
-		return envoy_cluster_v3.Cluster_V4_ONLY
+		return envoy_config_cluster_v3.Cluster_V4_ONLY
 	case "v6":
-		return envoy_cluster_v3.Cluster_V6_ONLY
+		return envoy_config_cluster_v3.Cluster_V6_ONLY
+	case "all":
+		return envoy_config_cluster_v3.Cluster_ALL
 	}
-	return envoy_cluster_v3.Cluster_AUTO
+	return envoy_config_cluster_v3.Cluster_AUTO
+}
+
+func protocolOptions(explicitHTTPVersion HTTPVersionType, idleConnectionTimeout timeout.Setting, maxRequestsPerConnection *uint32) map[string]*anypb.Any {
+	// Keep Envoy defaults by not setting protocol options at all if not necessary.
+	if explicitHTTPVersion == HTTPVersionAuto && idleConnectionTimeout.UseDefault() && maxRequestsPerConnection == nil {
+		return nil
+	}
+
+	options := envoy_upstream_http_v3.HttpProtocolOptions{}
+
+	switch explicitHTTPVersion {
+	// Default protocol version in Envoy is HTTP1.1.
+	case HTTPVersion1, HTTPVersionAuto:
+		options.UpstreamProtocolOptions = &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{},
+			},
+		}
+	case HTTPVersion2:
+		options.UpstreamProtocolOptions = &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_Http2ProtocolOptions{},
+			},
+		}
+	case HTTPVersion3:
+		options.UpstreamProtocolOptions = &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_{
+			ExplicitHttpConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig{
+				ProtocolConfig: &envoy_upstream_http_v3.HttpProtocolOptions_ExplicitHttpConfig_Http3ProtocolOptions{},
+			},
+		}
+	}
+
+	if !idleConnectionTimeout.UseDefault() || maxRequestsPerConnection != nil {
+		commonHTTPProtocolOptions := &envoy_config_core_v3.HttpProtocolOptions{}
+
+		if !idleConnectionTimeout.UseDefault() {
+			commonHTTPProtocolOptions.IdleTimeout = durationpb.New(idleConnectionTimeout.Duration())
+		}
+
+		if maxRequestsPerConnection != nil {
+			commonHTTPProtocolOptions.MaxRequestsPerConnection = wrapperspb.UInt32(*maxRequestsPerConnection)
+		}
+
+		options.CommonHttpProtocolOptions = commonHTTPProtocolOptions
+	}
+
+	return map[string]*anypb.Any{
+		"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": protobuf.MustMarshalAny(&options),
+	}
+}
+
+// slowStartConfig returns the slow start configuration.
+func slowStartConfig(slowStartConfig *dag.SlowStartConfig) *envoy_config_cluster_v3.Cluster_SlowStartConfig {
+	return &envoy_config_cluster_v3.Cluster_SlowStartConfig{
+		SlowStartWindow: durationpb.New(slowStartConfig.Window),
+		Aggression: &envoy_config_core_v3.RuntimeDouble{
+			DefaultValue: slowStartConfig.Aggression,
+			RuntimeKey:   "contour.slowstart.aggression",
+		},
+		MinWeightPercent: &envoy_type_v3.Percent{
+			Value: float64(slowStartConfig.MinWeightPercent),
+		},
+	}
 }

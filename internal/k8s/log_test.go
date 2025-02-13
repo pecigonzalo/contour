@@ -28,12 +28,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	klog "k8s.io/klog/v2"
+	controller_runtime_log "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
 	// klog automatic flush interval is 5s but we can wait for less time to pass
 	// since we proactively call klog.Flush().
-	klogFlushWaitTime     = time.Millisecond * 30
+	klogFlushWaitTime     = time.Millisecond * 100
 	klogFlushWaitInterval = time.Millisecond * 1
 )
 
@@ -111,17 +112,29 @@ func TestKlogOnlyLogsToLogrus(t *testing.T) {
 	assert.Empty(t, <-outC)
 
 	infoEntry := logHook.AllEntries()[0]
-	assert.Equal(t, infoLog+"\n", infoEntry.Message)
+	assert.Equal(t, infoLog, infoEntry.Message)
 	assert.Len(t, infoEntry.Data, 2)
 	assert.Equal(t, "bar", infoEntry.Data["foo"])
-	assert.Equal(t, fmt.Sprintf("%s:%d", sourceFile, infoLine), infoEntry.Data["location"])
+	assert.Equal(t, fmt.Sprintf("%s:%d", sourceFile, infoLine), infoEntry.Data["caller"])
 
 	errorEntry := logHook.AllEntries()[1]
 	assert.Equal(t, errorLog, errorEntry.Message)
 	assert.Len(t, errorEntry.Data, 3)
 	assert.Equal(t, "bar", errorEntry.Data["foo"])
 	assert.Equal(t, errorLogged, errorEntry.Data["error"])
-	assert.Equal(t, fmt.Sprintf("%s:%d", sourceFile, errorLine), errorEntry.Data["location"])
+	assert.Equal(t, fmt.Sprintf("%s:%d", sourceFile, errorLine), errorEntry.Data["caller"])
+}
+
+func TestControllerRuntimeLoggerLogsToLogrus(t *testing.T) {
+	// Comment out the following line to run this test.
+	t.Skip("this test has to be run individually since the controller-runtime logging infrastructure can only be initialized once per process")
+
+	log, logHook := test.NewNullLogger()
+	InitLogging(LogWriterOption(log.WithField("foo", "bar")))
+
+	controller_runtime_log.Log.Info("some message")
+	require.Eventually(t, func() bool { return len(logHook.AllEntries()) == 1 }, klogFlushWaitTime, klogFlushWaitInterval)
+	assert.Equal(t, "some message", logHook.AllEntries()[0].Message)
 }
 
 // Last LogWriterOption passed in should be used.
@@ -138,29 +151,50 @@ func TestMultipleLogWriterOptions(t *testing.T) {
 	assert.Equal(t, "data3", logHook.AllEntries()[0].Data["field"])
 }
 
-func TestLogLevelOption(t *testing.T) {
-	log, logHook := test.NewNullLogger()
+func TestLogLevelOptionKlog(t *testing.T) {
+	log, _ := test.NewNullLogger()
 	l := log.WithField("some", "field")
-	for logLevel := 1; logLevel <= 10; logLevel++ {
+	for logLevel := 0; logLevel <= 10; logLevel++ {
 		t.Run(fmt.Sprintf("log level %d", logLevel), func(t *testing.T) {
 			InitLogging(LogWriterOption(l), LogLevelOption(logLevel))
 			// Make sure log verbosity is set properly.
-			for verbosityLevel := 1; verbosityLevel <= 10; verbosityLevel++ {
-				enabled := klog.V(klog.Level(verbosityLevel)).Enabled()
+			for verbosityLevel := 0; verbosityLevel <= 10; verbosityLevel++ {
+				enabled := klog.V(klog.Level(verbosityLevel)).Enabled() //nolint:gosec // disable G115
 				if verbosityLevel <= logLevel {
 					assert.True(t, enabled)
-					klog.V(klog.Level(verbosityLevel)).Info("something")
-					klog.Flush()
-					assert.Eventually(t, func() bool { return len(logHook.AllEntries()) == 1 }, klogFlushWaitTime, klogFlushWaitInterval)
 				} else {
 					assert.False(t, enabled)
-					klog.V(klog.Level(verbosityLevel)).Info("something")
-					klog.Flush()
-					assert.Never(t, func() bool { return len(logHook.AllEntries()) > 0 }, klogFlushWaitTime, klogFlushWaitInterval)
 				}
-				logHook.Reset()
 			}
 		})
+	}
+}
+
+func TestLogLevelOptionControllerRuntime(t *testing.T) {
+	// Comment out the following line to run this test.
+	t.Skip("this test has to be run individually since the controller-runtime logging infrastructure can only be initialized once per process")
+
+	log, logHook := test.NewNullLogger()
+	l := log.WithField("some", "field")
+
+	// We can only call InitLogging once and test the output of the
+	// controller-runtime logger with one log level because the
+	// underlying logger does not let us reset it.
+	logLevel := 5
+	InitLogging(LogWriterOption(l), LogLevelOption(logLevel))
+	// Make sure log verbosity is set properly.
+	for verbosityLevel := 1; verbosityLevel <= 10; verbosityLevel++ {
+		enabled := controller_runtime_log.Log.V(verbosityLevel).Enabled()
+		if verbosityLevel <= logLevel {
+			assert.True(t, enabled)
+			controller_runtime_log.Log.V(verbosityLevel).Info("something")
+			assert.Eventually(t, func() bool { return len(logHook.AllEntries()) == 1 }, klogFlushWaitTime, klogFlushWaitInterval)
+		} else {
+			assert.False(t, enabled)
+			controller_runtime_log.Log.V(verbosityLevel).Info("something")
+			assert.Never(t, func() bool { return len(logHook.AllEntries()) > 0 }, klogFlushWaitTime, klogFlushWaitInterval)
+		}
+		logHook.Reset()
 	}
 }
 

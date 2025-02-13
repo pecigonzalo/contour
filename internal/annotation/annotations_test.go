@@ -17,12 +17,13 @@ import (
 	"fmt"
 	"testing"
 
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	"github.com/stretchr/testify/assert"
-	v1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
 	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 )
 
 func TestParseUint32(t *testing.T) {
@@ -35,7 +36,7 @@ func TestParseUint32(t *testing.T) {
 			want: 0,
 		},
 		"negative": {
-			s:    "-6", // for alice
+			s:    "-6",
 			want: 0,
 		},
 		"explicit": {
@@ -55,6 +56,115 @@ func TestParseUint32(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			got := parseUInt32(tc.s)
+			if got != tc.want {
+				t.Fatalf("expected: %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestParseint32(t *testing.T) {
+	tests := map[string]struct {
+		s    string
+		want int32
+	}{
+		"blank": {
+			s:    "",
+			want: 0,
+		},
+		"negative": {
+			s:    "-1",
+			want: -1,
+		},
+		"explicit": {
+			s:    "0",
+			want: 0,
+		},
+		"positive": {
+			s:    "2",
+			want: 2,
+		},
+		"too large": {
+			s:    "144115188075855872", // larger than int32
+			want: 0,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := parseInt32(tc.s)
+			if got != tc.want {
+				t.Fatalf("expected: %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestNumRetries(t *testing.T) {
+	tests := map[string]struct {
+		ingress *networking_v1.Ingress
+		want    uint32
+	}{
+		"blank": {
+			ingress: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: "ing",
+					Annotations: map[string]string{
+						"projectcontour.io/num-retries": "",
+					},
+				},
+			},
+			want: 1,
+		},
+		"Set to 1": {
+			ingress: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: "ing",
+					Annotations: map[string]string{
+						"projectcontour.io/num-retries": "1",
+					},
+				},
+			},
+			want: 1,
+		},
+		"Set to 0": {
+			ingress: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: "ing",
+					Annotations: map[string]string{
+						"projectcontour.io/num-retries": "0",
+					},
+				},
+			},
+			want: 1,
+		},
+		"Set to -1": {
+			ingress: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: "ing",
+					Annotations: map[string]string{
+						"projectcontour.io/num-retries": "-1",
+					},
+				},
+			},
+			want: 0,
+		},
+		"Set to 9": {
+			ingress: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: "ing",
+					Annotations: map[string]string{
+						"projectcontour.io/num-retries": "9",
+					},
+				},
+			},
+			want: 9,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := NumRetries(tc.ingress)
 			if got != tc.want {
 				t.Fatalf("expected: %v, got %v", tc.want, got)
 			}
@@ -118,7 +228,7 @@ func TestWebsocketRoutes(t *testing.T) {
 	}{
 		"empty": {
 			a: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/websocket-routes": "",
 					},
@@ -128,7 +238,7 @@ func TestWebsocketRoutes(t *testing.T) {
 		},
 		"empty with spaces": {
 			a: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/websocket-routes": ", ,",
 					},
@@ -138,7 +248,7 @@ func TestWebsocketRoutes(t *testing.T) {
 		},
 		"single value": {
 			a: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/websocket-routes": "/ws1",
 					},
@@ -150,7 +260,7 @@ func TestWebsocketRoutes(t *testing.T) {
 		},
 		"multiple values": {
 			a: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/websocket-routes": "/ws1,/ws2",
 					},
@@ -163,7 +273,7 @@ func TestWebsocketRoutes(t *testing.T) {
 		},
 		"multiple values with spaces and invalid entries": {
 			a: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/websocket-routes": " /ws1, , /ws2 ",
 					},
@@ -184,6 +294,49 @@ func TestWebsocketRoutes(t *testing.T) {
 	}
 }
 
+func TestTLSCertNamespace(t *testing.T) {
+	tests := map[string]struct {
+		a    *networking_v1.Ingress
+		want string
+	}{
+		"absent": {
+			a: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Annotations: map[string]string{},
+				},
+			},
+			want: "",
+		},
+		"empty": {
+			a: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Annotations: map[string]string{
+						"projectcontour.io/tls-cert-namespace": "",
+					},
+				},
+			},
+			want: "",
+		},
+		"valid value": {
+			a: &networking_v1.Ingress{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Annotations: map[string]string{
+						"projectcontour.io/tls-cert-namespace": "namespace-with-cert",
+					},
+				},
+			},
+			want: "namespace-with-cert",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := TLSCertNamespace(tc.a)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestHttpAllowed(t *testing.T) {
 	tests := map[string]struct {
 		i     *networking_v1.Ingress
@@ -191,7 +344,7 @@ func TestHttpAllowed(t *testing.T) {
 	}{
 		"basic ingress": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "simple",
 					Namespace: "default",
 				},
@@ -207,7 +360,7 @@ func TestHttpAllowed(t *testing.T) {
 		},
 		"kubernetes.io/ingress.allow-http: \"false\"": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "simple",
 					Namespace: "default",
 					Annotations: map[string]string{
@@ -239,21 +392,21 @@ func TestHttpAllowed(t *testing.T) {
 
 func TestAnnotationCompat(t *testing.T) {
 	tests := map[string]struct {
-		svc   *v1.Service
+		svc   *core_v1.Service
 		value string
 	}{
 		"no annotations": {
 			value: "",
-			svc: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
+			svc: &core_v1.Service{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{},
 				},
 			},
 		},
 		"projectcontour.io/annotation": {
 			value: "200",
-			svc: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
+			svc: &core_v1.Service{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/annotation": "200",
 					},
@@ -279,11 +432,11 @@ func TestAnnotationKindValidation(t *testing.T) {
 		valid bool
 	}
 	tests := map[string]struct {
-		obj         metav1.Object
+		obj         meta_v1.Object
 		annotations map[string]status
 	}{
 		"service": {
-			obj: &v1.Service{},
+			obj: &core_v1.Service{},
 			annotations: map[string]status{
 				"foo.invalid.com/annotation": {
 					known: false, valid: false,
@@ -294,7 +447,7 @@ func TestAnnotationKindValidation(t *testing.T) {
 			},
 		},
 		"httpproxy": {
-			obj: &contour_api_v1.HTTPProxy{},
+			obj: &contour_v1.HTTPProxy{},
 			annotations: map[string]status{
 				// Valid only on Service.
 				"projectcontour.io/max-requests": {
@@ -306,8 +459,8 @@ func TestAnnotationKindValidation(t *testing.T) {
 				},
 			},
 		},
-		"secrets": {
-			obj: &v1.Secret{},
+		"namespaces": {
+			obj: &core_v1.Namespace{},
 			annotations: map[string]status{
 				// In our namespace but not valid on this kind.
 				"projectcontour.io/ingress.class": {
@@ -324,15 +477,15 @@ func TestAnnotationKindValidation(t *testing.T) {
 	// Trivially check that everything specified in the global
 	// table is valid.
 	for _, kind := range []string{
-		kindOf(&v1.Service{}),
+		kindOf(&core_v1.Service{}),
 		kindOf(&networking_v1.Ingress{}),
-		kindOf(&contour_api_v1.HTTPProxy{}),
+		kindOf(&contour_v1.HTTPProxy{}),
 	} {
 		for key := range annotationsByKind[kind] {
 			t.Run(fmt.Sprintf("%s is known and valid for %s", key, kind),
 				func(t *testing.T) {
-					assert.Equal(t, true, IsKnown(key))
-					assert.Equal(t, true, ValidForKind(kind, key))
+					assert.True(t, IsKnown(key))
+					assert.True(t, ValidForKind(kind, key))
 				})
 		}
 	}
@@ -370,22 +523,22 @@ func backend(name string, port intstr.IntOrString) *networking_v1.IngressBackend
 
 // kindOf returns the kind string for the given Kubernetes object.
 //
-// The API machinery doesn't populate the metav1.TypeMeta field for
+// The API machinery doesn't populate the meta_v1.TypeMeta field for
 // objects, so we have to use a type assertion to detect kinds that
 // we care about.
 // TODO(youngnick): This is a straight copy from internal/k8s/kind.go
 // Needs to be moved to a separate module somewhere.
-func kindOf(obj interface{}) string {
+func kindOf(obj any) string {
 	switch obj.(type) {
-	case *v1.Secret:
+	case *core_v1.Secret:
 		return "Secret"
-	case *v1.Service:
+	case *core_v1.Service:
 		return "Service"
 	case *networking_v1.Ingress:
 		return "Ingress"
-	case *contour_api_v1.HTTPProxy:
+	case *contour_v1.HTTPProxy:
 		return "HTTPProxy"
-	case *contour_api_v1.TLSCertificateDelegation:
+	case *contour_v1.TLSCertificateDelegation:
 		return "TLSCertificateDelegation"
 	default:
 		return ""

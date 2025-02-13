@@ -23,29 +23,26 @@ import (
 	"os"
 	"time"
 
-	xdscache_v3 "github.com/projectcontour/contour/internal/xdscache/v3"
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/prometheus/common/expfmt"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/alecthomas/kingpin.v2"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 )
 
 const (
-	prometheusURL      = "http://unix/stats/prometheus"
+	// The prometheusURL is used to fetch the envoy metrics. Note that the filter
+	// value matches Envoy's raw stat names (i.e. those on the `/stats/` endpoint).
+	prometheusURL      = "http://unix/stats/prometheus?filter=^http\\..*\\.downstream_cx_active$"
 	healthcheckFailURL = "http://unix/healthcheck/fail"
 	prometheusStat     = "envoy_http_downstream_cx_active"
 )
 
 // shutdownReadyFile is the default file path used in the /shutdown endpoint.
-const shutdownReadyFile = "/ok"
+const shutdownReadyFile = "/admin/ok"
 
-// shutdownReadyFile is the default polling interval for the file used in the /shutdown endpoint.
+// shutdownReadyCheckInterval is the default polling interval for the file used in the /shutdown endpoint.
 const shutdownReadyCheckInterval = time.Second * 1
-
-func prometheusLabels() []string {
-	return []string{xdscache_v3.ENVOY_HTTP_LISTENER, xdscache_v3.ENVOY_HTTPS_LISTENER}
-}
 
 type shutdownmanagerContext struct {
 	// httpServePort defines what port the shutdown-manager listens on
@@ -78,6 +75,9 @@ type shutdownContext struct {
 	// adminAddress defines the address for the Envoy admin webpage, being configurable through --admin-address flag
 	adminAddress string
 
+	// shutdownReadyFile defines the name of the file that is used to signal that shutdown is completed.
+	shutdownReadyFile string
+
 	logrus.FieldLogger
 }
 
@@ -93,22 +93,21 @@ func newShutdownManagerContext() *shutdownmanagerContext {
 func newShutdownContext() *shutdownContext {
 	return &shutdownContext{
 		checkInterval:      5 * time.Second,
-		checkDelay:         60 * time.Second,
+		checkDelay:         0,
 		drainDelay:         0,
 		minOpenConnections: 0,
 	}
 }
 
 // healthzHandler handles the /healthz endpoint which is used for the shutdown-manager's liveness probe.
-func (s *shutdownmanagerContext) healthzHandler(w http.ResponseWriter, r *http.Request) {
-	http.StatusText(http.StatusOK)
-	if _, err := w.Write([]byte("OK")); err != nil {
+func (s *shutdownmanagerContext) healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	if _, err := w.Write([]byte(http.StatusText(http.StatusOK))); err != nil {
 		s.WithField("context", "healthzHandler").Error(err)
 	}
 }
 
 // shutdownReadyHandler handles the /shutdown endpoint which is used by Envoy to determine if it can terminate.
-// Once enough connections have drained based upon configuration, a file will be written to "/ok" in
+// Once enough connections have drained based upon configuration, a file will be written in
 // the shutdown manager's file system. Any HTTP request to /shutdown will use the existence of this
 // file to understand if it is safe to terminate. The file-based approach is used since the process in which
 // the kubelet calls the shutdown command is different than the HTTP request from Envoy to /shutdown
@@ -117,17 +116,17 @@ func (s *shutdownmanagerContext) shutdownReadyHandler(w http.ResponseWriter, r *
 	ctx := r.Context()
 	for {
 		_, err := os.Stat(s.shutdownReadyFile)
-		if os.IsNotExist(err) {
+		switch {
+		case os.IsNotExist(err):
 			l.Infof("file %s does not exist; checking again in %v", s.shutdownReadyFile,
 				s.shutdownReadyCheckInterval)
-		} else if err == nil {
+		case err == nil:
 			l.Infof("detected file %s; sending HTTP response", s.shutdownReadyFile)
-			http.StatusText(http.StatusOK)
-			if _, err := w.Write([]byte("OK")); err != nil {
+			if _, err := w.Write([]byte(http.StatusText(http.StatusOK))); err != nil {
 				l.Error(err)
 			}
 			return
-		} else {
+		default:
 			l.Errorf("error checking for file: %v", err)
 		}
 
@@ -157,7 +156,7 @@ func (s *shutdownContext) shutdownHandler() {
 		Duration: 200 * time.Millisecond,
 		Factor:   5.0,
 		Jitter:   0.1,
-	}, func(err error) bool {
+	}, func(error) bool {
 		// Always retry any error.
 		return true
 	}, func() error {
@@ -183,7 +182,7 @@ func (s *shutdownContext) shutdownHandler() {
 					WithField("open_connections", openConnections).
 					WithField("min_connections", s.minOpenConnections).
 					Info("min number of open connections found, shutting down")
-				file, err := os.Create(shutdownReadyFile)
+				file, err := os.Create(s.shutdownReadyFile)
 				if err != nil {
 					s.Error(err)
 				}
@@ -201,7 +200,6 @@ func (s *shutdownContext) shutdownHandler() {
 
 // shutdownEnvoy sends a POST request to /healthcheck/fail to tell Envoy to start draining connections
 func shutdownEnvoy(adminAddress string) error {
-
 	httpClient := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -224,7 +222,6 @@ func shutdownEnvoy(adminAddress string) error {
 
 // getOpenConnections parses a http request to a prometheus endpoint returning the sum of values found
 func getOpenConnections(adminAddress string) (int, error) {
-
 	httpClient := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -271,10 +268,11 @@ func parseOpenConnections(stats io.Reader) (int, error) {
 	// Look up open connections value
 	for _, metrics := range metricFamilies[prometheusStat].Metric {
 		for _, labels := range metrics.Label {
-			for _, item := range prometheusLabels() {
-				if item == labels.GetValue() {
-					openConnections += int(metrics.Gauge.GetValue())
-				}
+			switch labels.GetValue() {
+			// don't count connections to these listeners.
+			case "admin", "envoy-admin", "stats", "health", "stats-health":
+			default:
+				openConnections += int(metrics.Gauge.GetValue())
 			}
 		}
 	}
@@ -282,13 +280,17 @@ func parseOpenConnections(stats io.Reader) (int, error) {
 }
 
 func doShutdownManager(config *shutdownmanagerContext) {
-
 	config.Info("started envoy shutdown manager")
-	defer config.Info("stopped")
 
 	http.HandleFunc("/healthz", config.healthzHandler)
 	http.HandleFunc("/shutdown", config.shutdownReadyHandler)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.httpServePort), nil))
+
+	// Fails gosec G114: Use of net/http serve function that has no support for setting timeouts
+	// nolint:gosec
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", config.httpServePort), nil); err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+	config.Info("stopped")
 }
 
 // registerShutdownManager registers the envoy shutdown-manager sub-command and flags
@@ -297,6 +299,7 @@ func registerShutdownManager(cmd *kingpin.CmdClause, log logrus.FieldLogger) (*k
 	ctx.FieldLogger = log.WithField("context", "shutdown-manager")
 
 	shutdownmgr := cmd.Command("shutdown-manager", "Start envoy shutdown-manager.")
+	shutdownmgr.Flag("ready-file", "File to poll while waiting shutdown to be completed.").Default(shutdownReadyFile).StringVar(&ctx.shutdownReadyFile)
 	shutdownmgr.Flag("serve-port", "Port to serve the http server on.").IntVar(&ctx.httpServePort)
 
 	return shutdownmgr, ctx
@@ -308,12 +311,13 @@ func registerShutdown(cmd *kingpin.CmdClause, log logrus.FieldLogger) (*kingpin.
 	ctx.FieldLogger = log.WithField("context", "shutdown")
 
 	shutdown := cmd.Command("shutdown", "Initiate an shutdown sequence which configures Envoy to begin draining connections.")
-	shutdown.Flag("admin-port", "DEPRECATED: Envoy admin interface port.").IntVar(&ctx.adminPort)
 	shutdown.Flag("admin-address", "Envoy admin interface address.").Default("/admin/admin.sock").StringVar(&ctx.adminAddress)
+	shutdown.Flag("admin-port", "DEPRECATED: Envoy admin interface port.").IntVar(&ctx.adminPort)
+	shutdown.Flag("check-delay", "Time to wait before polling Envoy for open connections.").Default("0s").DurationVar(&ctx.checkDelay)
 	shutdown.Flag("check-interval", "Time to poll Envoy for open connections.").DurationVar(&ctx.checkInterval)
-	shutdown.Flag("check-delay", "Time to wait before polling Envoy for open connections.").Default("60s").DurationVar(&ctx.checkDelay)
 	shutdown.Flag("drain-delay", "Time to wait before draining Envoy connections.").Default("0s").DurationVar(&ctx.drainDelay)
 	shutdown.Flag("min-open-connections", "Min number of open connections when polling Envoy.").IntVar(&ctx.minOpenConnections)
+	shutdown.Flag("ready-file", "File to write when shutdown is completed.").Default(shutdownReadyFile).StringVar(&ctx.shutdownReadyFile)
 
 	return shutdown, ctx
 }

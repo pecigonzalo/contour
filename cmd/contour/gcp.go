@@ -1,6 +1,3 @@
-//go:build gcp
-// +build gcp
-
 // Copyright Project Contour Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build gcp
+
 package main
 
-// This file is protected by the +build gcp tag above to prevent
+// This file is protected by the go:build gcp tag above to prevent
 // the gcp dependencies from being part of the standard contour image.
 import _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"

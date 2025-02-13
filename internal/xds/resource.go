@@ -14,9 +14,7 @@
 package xds
 
 import (
-	"sync/atomic"
-
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // Resource represents a source of proto.Messages that can be registered
@@ -25,19 +23,6 @@ type Resource interface {
 	// Contents returns the contents of this resource.
 	Contents() []proto.Message
 
-	// Query returns an entry for each resource name supplied.
-	Query(names []string) []proto.Message
-
-	// Register registers ch to receive a value when Notify is called.
-	Register(chan int, int, ...string)
-
 	// TypeURL returns the typeURL of messages returned from Values.
 	TypeURL() string
-}
-
-// Counter holds an atomically incrementing counter.
-type Counter uint64
-
-func (c *Counter) Next() uint64 {
-	return atomic.AddUint64((*uint64)(c), 1)
 }

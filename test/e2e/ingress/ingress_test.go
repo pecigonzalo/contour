@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package ingress
 
@@ -20,18 +19,18 @@ import (
 	"context"
 	"testing"
 
-	contour_api_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
-
-	certmanagerv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
-	certmanagermetav1 "github.com/jetstack/cert-manager/pkg/apis/meta/v1"
-	. "github.com/onsi/ginkgo"
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	certmanagermetav1 "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
+	"github.com/stretchr/testify/require"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 	"github.com/projectcontour/contour/pkg/config"
 	"github.com/projectcontour/contour/test/e2e"
-	"github.com/stretchr/testify/require"
-	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var f = e2e.NewFramework(false)
@@ -57,7 +56,7 @@ var _ = Describe("Ingress", func() {
 	var (
 		contourCmd            *gexec.Session
 		contourConfig         *config.Parameters
-		contourConfiguration  *contour_api_v1alpha1.ContourConfiguration
+		contourConfiguration  *contour_v1alpha1.ContourConfiguration
 		contourConfigFile     string
 		additionalContourArgs []string
 	)
@@ -65,7 +64,7 @@ var _ = Describe("Ingress", func() {
 	BeforeEach(func() {
 		// Contour config file contents, can be modified in nested
 		// BeforeEach.
-		contourConfig = &config.Parameters{}
+		contourConfig = e2e.DefaultContourConfigFileParams()
 
 		contourConfiguration = e2e.DefaultContourConfiguration()
 
@@ -84,7 +83,7 @@ var _ = Describe("Ingress", func() {
 		require.NoError(f.T(), err)
 
 		// Wait for Envoy to be healthy.
-		require.NoError(f.T(), f.Deployment.WaitForEnvoyDaemonSetUpdated())
+		require.NoError(f.T(), f.Deployment.WaitForEnvoyUpdated())
 	})
 
 	AfterEach(func() {
@@ -98,7 +97,7 @@ var _ = Describe("Ingress", func() {
 			BeforeEach(func() {
 				// Top level issuer.
 				selfSignedIssuer := &certmanagerv1.Issuer{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Namespace: namespace,
 						Name:      "selfsigned",
 					},
@@ -112,7 +111,7 @@ var _ = Describe("Ingress", func() {
 
 				// CA to sign backend certs with.
 				caCertificate := &certmanagerv1.Certificate{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Namespace: namespace,
 						Name:      "ca-cert",
 					},
@@ -133,7 +132,7 @@ var _ = Describe("Ingress", func() {
 
 				// Issuer based on CA to generate new certs with.
 				basedOnCAIssuer := &certmanagerv1.Issuer{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Namespace: namespace,
 						Name:      "ca-issuer",
 					},
@@ -149,7 +148,7 @@ var _ = Describe("Ingress", func() {
 
 				// Backend client cert, can use for upstream validation as well.
 				backendClientCert := &certmanagerv1.Certificate{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Namespace: namespace,
 						Name:      "backend-client-cert",
 					},
@@ -172,7 +171,7 @@ var _ = Describe("Ingress", func() {
 						Name:      "backend-client-cert",
 					},
 				}
-				contourConfiguration.Spec.Envoy.ClientCertificate = &contour_api_v1alpha1.NamespacedName{
+				contourConfiguration.Spec.Envoy.ClientCertificate = &contour_v1alpha1.NamespacedName{
 					Namespace: namespace,
 					Name:      "backend-client-cert",
 				}
@@ -181,8 +180,76 @@ var _ = Describe("Ingress", func() {
 			testBackendTLS(namespace)
 		})
 	})
-})
 
-func pathTypePtr(val networkingv1.PathType) *networkingv1.PathType {
-	return &val
-}
+	f.NamespacedTest("ingress-multiple-ingress-classes-contour", func(namespace string) {
+		Context("multiple ingress classes with contour ingress ClassName set", func() {
+			BeforeEach(func() {
+				additionalContourArgs = []string{
+					"--ingress-class-name=contour,team1",
+				}
+				contourConfiguration.Spec.Ingress = &contour_v1alpha1.IngressConfig{
+					ClassNames: []string{"contour", "team1"},
+				}
+			})
+			testIngressClass(namespace, "contour")
+		})
+	})
+
+	f.NamespacedTest("ingress-multiple-ingress-classes-team1", func(namespace string) {
+		Context("multiple ingress classes with team1 ingress ClassName set", func() {
+			BeforeEach(func() {
+				additionalContourArgs = []string{
+					"--ingress-class-name=contour,team1",
+				}
+				contourConfiguration.Spec.Ingress = &contour_v1alpha1.IngressConfig{
+					ClassNames: []string{"contour", "team1"},
+				}
+			})
+			testIngressClass(namespace, "team1")
+		})
+	})
+
+	f.NamespacedTest("long-path-match", testLongPathMatch)
+
+	Context("with global headers policy defined", func() {
+		BeforeEach(func() {
+			contourConfig.Policy.RequestHeadersPolicy.Set = map[string]string{
+				"X-Contour-GlobalRequestHeader": "foo",
+			}
+			contourConfig.Policy.ResponseHeadersPolicy.Set = map[string]string{
+				"X-Contour-GlobalResponseHeader": "bar",
+			}
+
+			contourConfiguration.Spec.Policy = &contour_v1alpha1.PolicyConfig{
+				RequestHeadersPolicy: &contour_v1alpha1.HeadersPolicy{
+					Set: map[string]string{
+						"X-Contour-GlobalRequestHeader": "foo",
+					},
+				},
+				ResponseHeadersPolicy: &contour_v1alpha1.HeadersPolicy{
+					Set: map[string]string{
+						"X-Contour-GlobalResponseHeader": "bar",
+					},
+				},
+			}
+		})
+
+		Context("when ApplyToIngress is false", func() {
+			BeforeEach(func() {
+				contourConfig.Policy.ApplyToIngress = false
+				contourConfiguration.Spec.Policy.ApplyToIngress = ptr.To(false)
+			})
+
+			f.NamespacedTest("global-headers-policy-apply-to-ingress-false", testGlobalHeadersPolicy(false))
+		})
+
+		Context("when ApplyToIngress is true", func() {
+			BeforeEach(func() {
+				contourConfig.Policy.ApplyToIngress = true
+				contourConfiguration.Spec.Policy.ApplyToIngress = ptr.To(true)
+			})
+
+			f.NamespacedTest("global-headers-policy-apply-to-ingress-true", testGlobalHeadersPolicy(true))
+		})
+	})
+})

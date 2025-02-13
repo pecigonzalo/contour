@@ -14,7 +14,7 @@
 package k8s
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -43,29 +43,28 @@ func NewNamespaceFilter(
 	return e
 }
 
-func (e *namespaceFilter) allowed(obj interface{}) bool {
-	if obj, ok := obj.(metav1.Object); ok {
+func (e *namespaceFilter) allowed(obj any) bool {
+	if obj, ok := obj.(meta_v1.Object); ok {
 		_, ok := e.index[obj.GetNamespace()]
 		return ok
 	}
 
 	return true
-
 }
 
-func (e *namespaceFilter) OnAdd(obj interface{}) {
+func (e *namespaceFilter) OnAdd(obj any, isInInitialList bool) {
 	if e.allowed(obj) {
-		e.next.OnAdd(obj)
+		e.next.OnAdd(obj, isInInitialList)
 	}
 }
 
-func (e *namespaceFilter) OnUpdate(oldObj, newObj interface{}) {
+func (e *namespaceFilter) OnUpdate(oldObj, newObj any) {
 	if e.allowed(oldObj) {
 		e.next.OnUpdate(oldObj, newObj)
 	}
 }
 
-func (e *namespaceFilter) OnDelete(obj interface{}) {
+func (e *namespaceFilter) OnDelete(obj any) {
 	if e.allowed(obj) {
 		e.next.OnDelete(obj)
 	}

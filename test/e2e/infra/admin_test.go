@@ -12,14 +12,14 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package infra
 
 import (
-	. "github.com/onsi/ginkgo"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
+
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 func testAdminInterface() {

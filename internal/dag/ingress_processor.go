@@ -14,17 +14,19 @@
 package dag
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
-	"k8s.io/apimachinery/pkg/util/intstr"
-
-	"github.com/projectcontour/contour/internal/annotation"
-	"github.com/projectcontour/contour/internal/k8s"
 	"github.com/sirupsen/logrus"
 	networking_v1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+	"github.com/projectcontour/contour/internal/annotation"
+	"github.com/projectcontour/contour/internal/k8s"
 )
 
 // IngressProcessor translates Ingresses into DAG
@@ -49,6 +51,28 @@ type IngressProcessor struct {
 
 	// Response headers that will be set on all routes (optional).
 	ResponseHeadersPolicy *HeadersPolicy
+
+	// ConnectTimeout defines how long the proxy should wait when establishing connection to upstream service.
+	ConnectTimeout time.Duration
+
+	// MaxRequestsPerConnection defines the maximum number of requests per connection to the upstream before it is closed.
+	MaxRequestsPerConnection *uint32
+
+	// PerConnectionBufferLimitBytes defines the soft limit on size of the cluster’s new connection read and write buffers.
+	PerConnectionBufferLimitBytes *uint32
+
+	// SetSourceMetadataOnRoutes defines whether to set the Kind,
+	// Namespace and Name fields on generated DAG routes. This is
+	// configurable and off by default in order to support the feature
+	// without requiring all existing test cases to change.
+	SetSourceMetadataOnRoutes bool
+
+	// GlobalCircuitBreakerDefaults defines global circuit breaker defaults.
+	GlobalCircuitBreakerDefaults *contour_v1alpha1.CircuitBreakers
+
+	// UpstreamTLS defines the TLS settings like min/max version
+	// and cipher suites for upstream connections.
+	UpstreamTLS *UpstreamTLS
 }
 
 // Run translates Ingresses into DAG objects and
@@ -75,23 +99,22 @@ func (p *IngressProcessor) Run(dag *DAG, source *KubernetesCache) {
 func (p *IngressProcessor) computeSecureVirtualhosts() {
 	for _, ing := range p.source.ingresses {
 		for _, tls := range ing.Spec.TLS {
-			secretName := k8s.NamespacedNameFrom(tls.SecretName, k8s.DefaultNamespace(ing.GetNamespace()))
-			sec, err := p.source.LookupSecret(secretName, validSecret)
+			secretName := k8s.NamespacedNameFrom(tls.SecretName, k8s.TLSCertAnnotationNamespace(ing), k8s.DefaultNamespace(ing.GetNamespace()))
+			sec, err := p.source.LookupTLSSecret(secretName, ing.GetNamespace())
 			if err != nil {
-				p.WithError(err).
-					WithField("name", ing.GetName()).
-					WithField("namespace", ing.GetNamespace()).
-					WithField("secret", secretName).
-					Error("unresolved secret reference")
-				continue
-			}
-
-			if !p.source.DelegationPermitted(secretName, ing.GetNamespace()) {
-				p.WithError(err).
-					WithField("name", ing.GetName()).
-					WithField("namespace", ing.GetNamespace()).
-					WithField("secret", secretName).
-					Error("certificate delegation not permitted")
+				if _, ok := err.(DelegationNotPermittedError); ok {
+					p.WithError(err).
+						WithField("name", ing.GetName()).
+						WithField("namespace", ing.GetNamespace()).
+						WithField("secret", secretName).
+						Error("certificate delegation not permitted")
+				} else {
+					p.WithError(err).
+						WithField("name", ing.GetName()).
+						WithField("namespace", ing.GetNamespace()).
+						WithField("secret", secretName).
+						Error("unresolved secret reference")
+				}
 				continue
 			}
 
@@ -99,10 +122,35 @@ func (p *IngressProcessor) computeSecureVirtualhosts() {
 			// ahead and create the SecureVirtualHost for this
 			// Ingress.
 			for _, host := range tls.Hosts {
-				svhost := p.dag.EnsureSecureVirtualHost(ListenerName{Name: host, ListenerName: "ingress_https"})
-				svhost.Secret = sec
+				listener, err := p.dag.GetSingleListener("https")
+				if err != nil {
+					p.WithError(err).
+						WithField("name", ing.GetName()).
+						WithField("namespace", ing.GetNamespace()).
+						Errorf("error identifying listener")
+					return
+				}
+
 				// default to a minimum TLS version of 1.2 if it's not specified
-				svhost.MinTLSVersion = annotation.MinTLSVersion(annotation.ContourAnnotation(ing, "tls-minimum-protocol-version"), "1.2")
+				minTLSVer := annotation.TLSVersion(annotation.ContourAnnotation(ing, "tls-minimum-protocol-version"), "1.2")
+				// default to a maximum TLS version of 1.3 if it's not specified
+				maxTLSVer := annotation.TLSVersion(annotation.ContourAnnotation(ing, "tls-maximum-protocol-version"), "1.3")
+
+				if maxTLSVer < minTLSVer {
+					p.WithError(err).
+						WithField("name", ing.GetName()).
+						WithField("namespace", ing.GetNamespace()).
+						WithField("minTLSVersion", minTLSVer).
+						WithField("maxTLSVersion", maxTLSVer).
+						Errorf("error TLS protocol version, the minimum protocol version is greater than the maximum protocol version")
+					return
+				}
+
+				svhost := p.dag.EnsureSecureVirtualHost(listener.Name, host)
+				svhost.Secret = sec
+				svhost.MinTLSVersion = minTLSVer
+				svhost.MaxTLSVersion = maxTLSVer
+
 			}
 		}
 	}
@@ -131,7 +179,8 @@ func (p *IngressProcessor) computeIngressRule(ing *networking_v1.Ingress, rule n
 	var clientCertSecret *Secret
 	var err error
 	if p.ClientCertificate != nil {
-		clientCertSecret, err = p.source.LookupSecret(*p.ClientCertificate, validSecret)
+		// Since the client certificate is configured by admin, explicit delegation is not required.
+		clientCertSecret, err = p.source.LookupTLSSecretInsecure(*p.ClientCertificate)
 		if err != nil {
 			p.WithError(err).
 				WithField("name", ing.GetName()).
@@ -145,18 +194,25 @@ func (p *IngressProcessor) computeIngressRule(ing *networking_v1.Ingress, rule n
 	for _, httppath := range httppaths(rule) {
 		path := stringOrDefault(httppath.Path, "/")
 		// Default to implementation specific path matching if not set.
-		pathType := derefPathTypeOr(httppath.PathType, networking_v1.PathTypeImplementationSpecific)
+		pathType := ptr.Deref(httppath.PathType, networking_v1.PathTypeImplementationSpecific)
 		be := httppath.Backend
 		m := types.NamespacedName{Name: be.Service.Name, Namespace: ing.Namespace}
 
-		var port intstr.IntOrString
+		port := int(be.Service.Port.Number)
 		if len(be.Service.Port.Name) > 0 {
-			port = intstr.FromString(be.Service.Port.Name)
-		} else {
-			port = intstr.FromInt(int(be.Service.Port.Number))
-		}
+			_, svcPort, err2 := p.source.LookupService(m, intstr.FromString(be.Service.Port.Name))
+			if err2 != nil {
+				p.WithError(err2).
+					WithField("name", ing.GetName()).
+					WithField("namespace", ing.GetNamespace()).
+					WithField("service", be.Service.Name).
+					Error("service is not found")
+				continue
+			}
 
-		s, err := p.dag.EnsureService(m, port, p.source, p.EnableExternalNameService)
+			port = int(svcPort.Port)
+		}
+		s, err := p.dag.EnsureService(m, port, port, p.source, p.EnableExternalNameService)
 		if err != nil {
 			p.WithError(err).
 				WithField("name", ing.GetName()).
@@ -165,6 +221,7 @@ func (p *IngressProcessor) computeIngressRule(ing *networking_v1.Ingress, rule n
 				Error("unresolved service reference")
 			continue
 		}
+		s = serviceCircuitBreakerPolicy(s, p.GlobalCircuitBreakerDefaults)
 
 		r, err := p.route(ing, rule.Host, path, pathType, s, clientCertSecret, be.Service.Name, be.Service.Port.Number, p.FieldLogger)
 		if err != nil {
@@ -178,25 +235,39 @@ func (p *IngressProcessor) computeIngressRule(ing *networking_v1.Ingress, rule n
 
 		// should we create port 80 routes for this ingress
 		if annotation.TLSRequired(ing) || annotation.HTTPAllowed(ing) {
-			vhost := p.dag.EnsureVirtualHost(ListenerName{Name: host, ListenerName: "ingress_http"})
-			vhost.addRoute(r)
+			listener, err := p.dag.GetSingleListener("http")
+			if err != nil {
+				p.WithError(err).
+					WithField("name", ing.GetName()).
+					WithField("namespace", ing.GetNamespace()).
+					Errorf("error identifying listener")
+				return
+			}
+
+			vhost := p.dag.EnsureVirtualHost(listener.Name, host)
+			vhost.AddRoute(r)
+		}
+
+		listener, err := p.dag.GetSingleListener("https")
+		if err != nil {
+			p.WithError(err).
+				WithField("name", ing.GetName()).
+				WithField("namespace", ing.GetNamespace()).
+				Errorf("error identifying listener")
+			return
 		}
 
 		// computeSecureVirtualhosts will have populated b.securevirtualhosts
 		// with the names of tls enabled ingress objects. If host exists then
 		// it is correctly configured for TLS.
-		if svh := p.dag.GetSecureVirtualHost(ListenerName{Name: host, ListenerName: "ingress_https"}); svh != nil && host != "*" {
-			svh.addRoute(r)
+		if svh := p.dag.GetSecureVirtualHost(listener.Name, host); svh != nil && host != "*" {
+			svh.AddRoute(r)
 		}
 	}
 }
 
-const singleDNSLabelWildcardRegex = "^[a-z0-9]([-a-z0-9]*[a-z0-9])?"
-
-var _ = regexp.MustCompile(singleDNSLabelWildcardRegex)
-
 // route builds a dag.Route for the supplied Ingress.
-func (p *IngressProcessor) route(ingress *networking_v1.Ingress, host string, path string, pathType networking_v1.PathType, service *Service, clientCertSecret *Secret, serviceName string, servicePort int32, log logrus.FieldLogger) (*Route, error) {
+func (p *IngressProcessor) route(ingress *networking_v1.Ingress, host, path string, pathType networking_v1.PathType, service *Service, clientCertSecret *Secret, serviceName string, servicePort int32, log logrus.FieldLogger) (*Route, error) {
 	log = log.WithFields(logrus.Fields{
 		"name":      ingress.Name,
 		"namespace": ingress.Namespace,
@@ -209,11 +280,11 @@ func (p *IngressProcessor) route(ingress *networking_v1.Ingress, host string, pa
 	dynamicHeaders["CONTOUR_SERVICE_PORT"] = strconv.Itoa(int(servicePort))
 
 	// Get default headersPolicies
-	reqHP, err := headersPolicyService(p.RequestHeadersPolicy, nil, dynamicHeaders)
+	reqHP, err := headersPolicyService(p.RequestHeadersPolicy, nil, true, dynamicHeaders)
 	if err != nil {
 		return nil, err
 	}
-	respHP, err := headersPolicyService(p.ResponseHeadersPolicy, nil, dynamicHeaders)
+	respHP, err := headersPolicyService(p.ResponseHeadersPolicy, nil, false, dynamicHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -224,12 +295,22 @@ func (p *IngressProcessor) route(ingress *networking_v1.Ingress, host string, pa
 		TimeoutPolicy: ingressTimeoutPolicy(ingress, log),
 		RetryPolicy:   ingressRetryPolicy(ingress, log),
 		Clusters: []*Cluster{{
-			Upstream:              service,
-			Protocol:              service.Protocol,
-			ClientCertificate:     clientCertSecret,
-			RequestHeadersPolicy:  reqHP,
-			ResponseHeadersPolicy: respHP,
+			Upstream:                      service,
+			Protocol:                      service.Protocol,
+			ClientCertificate:             clientCertSecret,
+			RequestHeadersPolicy:          reqHP,
+			ResponseHeadersPolicy:         respHP,
+			TimeoutPolicy:                 ClusterTimeoutPolicy{ConnectTimeout: p.ConnectTimeout},
+			MaxRequestsPerConnection:      p.MaxRequestsPerConnection,
+			PerConnectionBufferLimitBytes: p.PerConnectionBufferLimitBytes,
+			UpstreamTLS:                   p.UpstreamTLS,
 		}},
+	}
+
+	if p.SetSourceMetadataOnRoutes {
+		r.Kind = "Ingress"
+		r.Namespace = ingress.Namespace
+		r.Name = ingress.Name
 	}
 
 	switch pathType {
@@ -265,16 +346,7 @@ func (p *IngressProcessor) route(ingress *networking_v1.Ingress, host string, pa
 	// as Envoy's virtualhost hostname wildcard matching can match multiple
 	// labels. This match ignores a port in the hostname in case it is present.
 	if strings.HasPrefix(host, "*.") {
-		r.HeaderMatchConditions = []HeaderMatchCondition{
-			{
-				// Internally Envoy uses the HTTP/2 ":authority" header in
-				// place of the HTTP/1 "host" header.
-				// See: https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#config-route-v3-headermatcher
-				Name:      ":authority",
-				MatchType: HeaderMatchTypeRegex,
-				Value:     singleDNSLabelWildcardRegex + regexp.QuoteMeta(host[1:]),
-			},
-		}
+		r.HeaderMatchConditions = append(r.HeaderMatchConditions, wildcardDomainHeaderMatch(host))
 	}
 
 	return r, nil
@@ -315,13 +387,6 @@ func stringOrDefault(s, def string) string {
 		return def
 	}
 	return s
-}
-
-func derefPathTypeOr(ptr *networking_v1.PathType, def networking_v1.PathType) networking_v1.PathType {
-	if ptr != nil {
-		return *ptr
-	}
-	return def
 }
 
 // httppaths returns a slice of HTTPIngressPath values for a given IngressRule.

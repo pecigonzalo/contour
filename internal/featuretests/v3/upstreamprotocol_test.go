@@ -16,13 +16,14 @@ package v3
 import (
 	"testing"
 
-	envoy_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	core_v1 "k8s.io/api/core/v1"
+	networking_v1 "k8s.io/api/networking/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
 	"github.com/projectcontour/contour/internal/featuretests"
 	"github.com/projectcontour/contour/internal/fixture"
-	v1 "k8s.io/api/core/v1"
-	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // Test that contour correctly recognizes the upstream-protocol.tls
@@ -33,11 +34,11 @@ func TestUpstreamProtocolTLS(t *testing.T) {
 
 	s1 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.tls", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnAdd(s1)
 
 	i1 := &networking_v1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "kuard",
 			Namespace: "default",
 		},
@@ -47,21 +48,21 @@ func TestUpstreamProtocolTLS(t *testing.T) {
 	}
 	rh.OnAdd(i1)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			tlsCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil),
+			tlsCluster(cluster("default/kuard/443/4929fca9d4", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, nil),
 		),
 		TypeUrl: clusterType,
 	})
 
 	s2 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.tls", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnUpdate(s1, s2)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			tlsCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil),
+			tlsCluster(cluster("default/kuard/443/4929fca9d4", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, nil),
 		),
 		TypeUrl: clusterType,
 	})
@@ -75,11 +76,11 @@ func TestUpstreamProtocolH2C(t *testing.T) {
 
 	s1 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.h2c", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnAdd(s1)
 
 	i1 := &networking_v1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "kuard",
 			Namespace: "default",
 		},
@@ -89,21 +90,21 @@ func TestUpstreamProtocolH2C(t *testing.T) {
 	}
 	rh.OnAdd(i1)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			h2cCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443")),
+			h2cCluster(cluster("default/kuard/443/f4f94965ec", "default/kuard/securebackend", "default_kuard_443")),
 		),
 		TypeUrl: clusterType,
 	})
 
 	s2 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.h2c", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnUpdate(s1, s2)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			h2cCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443")),
+			h2cCluster(cluster("default/kuard/443/f4f94965ec", "default/kuard/securebackend", "default_kuard_443")),
 		),
 		TypeUrl: clusterType,
 	})
@@ -117,11 +118,11 @@ func TestUpstreamProtocolH2(t *testing.T) {
 
 	s1 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.h2", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnAdd(s1)
 
 	i1 := &networking_v1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "kuard",
 			Namespace: "default",
 		},
@@ -131,21 +132,21 @@ func TestUpstreamProtocolH2(t *testing.T) {
 	}
 	rh.OnAdd(i1)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			h2cCluster(tlsCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, "h2")),
+			h2cCluster(tlsCluster(cluster("default/kuard/443/bf1c365741", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, nil, "h2")),
 		),
 		TypeUrl: clusterType,
 	})
 
 	s2 := fixture.NewService("kuard").
 		Annotate("projectcontour.io/upstream-protocol.h2", "securebackend").
-		WithPorts(v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
+		WithPorts(core_v1.ServicePort{Name: "securebackend", Port: 443, TargetPort: intstr.FromInt(8888)})
 	rh.OnUpdate(s1, s2)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			h2cCluster(tlsCluster(cluster("default/kuard/443/da39a3ee5e", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, "h2")),
+			h2cCluster(tlsCluster(cluster("default/kuard/443/bf1c365741", "default/kuard/securebackend", "default_kuard_443"), nil, "", "", nil, nil, "h2")),
 		),
 		TypeUrl: clusterType,
 	})

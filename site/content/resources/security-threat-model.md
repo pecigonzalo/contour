@@ -54,7 +54,7 @@ Contour is unable to do much about this, and we expect administrators the use th
 #### Multitenancy
 Contour is designed to be used in a multitenant fashion - it's an expected use case that a Contour install would service teams that have completely different security contexts, and should not be able to access each others config.
 Contour mitigates this as far as we can, using our HTTPProxy and TSLCertificateDelegation CRDs to enable more-secure cross-namespace references.
-The ReferencePolicy object in the Gateway API is also based on this idea, that cross-namespace references are only valid when the *owner of the namespace* accepts them.
+The ReferenceGrant object in the Gateway API is also based on this idea, that cross-namespace references are only valid when the *owner of the namespace* accepts them.
 #### Insider access
 In general, Contour adheres to the Kubernetes security model, that makes the minimum size security boundary the namespace (or at least, the RBAC around objects in that namespace).
 For Contour's primary use cases to work, application developers and other ingress configuration owners *must* have access to create or modify ingress config objects (whether they are Ingress, HTTPProxy, or Gateway API) inside their own namespace.
@@ -95,7 +95,7 @@ We maintain a CI pipeline that runs golangci-lint including the usual set of Go 
 ## Conclusion
 
 The Contour team works hard to understand the project's security context and keep up with the state of the art for Kubernetes security.
-The team hopes that this examination of our security model provides some insight into both how we develop Contour and what adminsitrators should be thinking about to run Contour in as secure way as possible.
+The team hopes that this examination of our security model provides some insight into both how we develop Contour and what administrators should be thinking about to run Contour in as secure way as possible.
 We aim for secure-by-default as far as possible, and where we do have to allow risks, will document them here.
 
 [1]: /resources/security-process

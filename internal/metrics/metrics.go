@@ -18,9 +18,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/projectcontour/contour/internal/build"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/projectcontour/contour/internal/build"
 )
 
 // Metrics provide Prometheus metrics for the app
@@ -33,10 +34,19 @@ type Metrics struct {
 	proxyValidGauge     *prometheus.GaugeVec
 	proxyOrphanedGauge  *prometheus.GaugeVec
 
-	dagRebuildGauge             *prometheus.GaugeVec
+	dagRebuildGauge             prometheus.Gauge
+	dagCacheObjectGauge         *prometheus.GaugeVec
 	dagRebuildTotal             prometheus.Counter
+	DAGRebuildSeconds           prometheus.Summary
 	CacheHandlerOnUpdateSummary prometheus.Summary
 	EventHandlerOperations      *prometheus.CounterVec
+
+	statusUpdateTotal           *prometheus.CounterVec
+	statusUpdateSuccess         *prometheus.CounterVec
+	statusUpdateFailed          *prometheus.CounterVec
+	statusUpdateConflict        *prometheus.CounterVec
+	statusUpdateNoop            *prometheus.CounterVec
+	statusUpdateDurationSeconds *prometheus.SummaryVec
 
 	// Keep a local cache of metrics for comparison on updates
 	proxyMetricCache *RouteMetric
@@ -65,10 +75,19 @@ const (
 	HTTPProxyValidGauge     = "contour_httpproxy_valid"
 	HTTPProxyOrphanedGauge  = "contour_httpproxy_orphaned"
 
+	DAGCacheObjectGauge         = "contour_dag_cache_object"
 	DAGRebuildGauge             = "contour_dagrebuild_timestamp"
 	DAGRebuildTotal             = "contour_dagrebuild_total"
+	DAGRebuildSeconds           = "contour_dagrebuild_seconds"
 	cacheHandlerOnUpdateSummary = "contour_cachehandler_onupdate_duration_seconds"
 	eventHandlerOperations      = "contour_eventhandler_operation_total"
+
+	statusUpdateTotal           = "contour_status_update_total"
+	statusUpdateSuccess         = "contour_status_update_success_total"
+	statusUpdateFailed          = "contour_status_update_failed_total"
+	statusUpdateConflict        = "contour_status_update_conflict_total"
+	statusUpdateNoop            = "contour_status_update_noop_total"
+	statusUpdateDurationSeconds = "contour_status_update_duration_seconds"
 )
 
 // NewMetrics creates a new set of metrics and registers them with
@@ -122,17 +141,39 @@ func NewMetrics(registry *prometheus.Registry) *Metrics {
 			},
 			[]string{"namespace"},
 		),
-		dagRebuildGauge: prometheus.NewGaugeVec(
+		dagRebuildGauge: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: DAGRebuildGauge,
 				Help: "Timestamp of the last DAG rebuild.",
 			},
-			[]string{},
+		),
+		dagCacheObjectGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: DAGCacheObjectGauge,
+				Help: "Total number of items that are currently in the DAG cache.",
+			},
+			[]string{"kind"},
 		),
 		dagRebuildTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: DAGRebuildTotal,
 				Help: "Total number of times DAG has been rebuilt since startup",
+			},
+		),
+		DAGRebuildSeconds: prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name: DAGRebuildSeconds,
+				Help: "Duration in seconds of DAG rebuilds",
+				Objectives: map[float64]float64{
+					0.00: 0.01,
+					0.25: 0.01,
+					0.50: 0.01,
+					0.75: 0.01,
+					0.90: 0.01,
+					0.95: 0.005,
+					0.99: 0.001,
+					1.00: 0.001,
+				},
 			},
 		),
 		CacheHandlerOnUpdateSummary: prometheus.NewSummary(prometheus.SummaryOpts{
@@ -146,6 +187,58 @@ func NewMetrics(registry *prometheus.Registry) *Metrics {
 				Help: "Total number of Kubernetes object changes Contour has received by operation and object kind.",
 			},
 			[]string{"op", "kind"},
+		),
+		statusUpdateTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: statusUpdateTotal,
+				Help: "Total number of status updates by object kind.",
+			},
+			[]string{"kind"},
+		),
+		statusUpdateSuccess: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: statusUpdateSuccess,
+				Help: "Number of status updates that succeeded by object kind.",
+			},
+			[]string{"kind"},
+		),
+		statusUpdateNoop: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: statusUpdateNoop,
+				Help: "Number of status updates that are no-ops by object kind. This is a subset of successful status updates.",
+			},
+			[]string{"kind"},
+		),
+		statusUpdateFailed: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: statusUpdateFailed,
+				Help: "Number of status updates that failed by object kind.",
+			},
+			[]string{"kind"},
+		),
+		statusUpdateConflict: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: statusUpdateConflict,
+				Help: "Number of status update conflicts encountered by object kind.",
+			},
+			[]string{"kind"},
+		),
+		statusUpdateDurationSeconds: prometheus.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Name: statusUpdateDurationSeconds,
+				Help: "How long a status update takes to finish.",
+				Objectives: map[float64]float64{
+					0.00: 0.01,
+					0.25: 0.01,
+					0.50: 0.01,
+					0.75: 0.01,
+					0.90: 0.01,
+					0.95: 0.005,
+					0.99: 0.001,
+					1.00: 0.001,
+				},
+			},
+			[]string{"kind", "error"},
 		),
 	}
 	m.buildInfoGauge.WithLabelValues(build.Branch, build.Sha, build.Version).Set(1)
@@ -164,8 +257,16 @@ func (m *Metrics) register(registry *prometheus.Registry) {
 		m.proxyOrphanedGauge,
 		m.dagRebuildGauge,
 		m.dagRebuildTotal,
+		m.dagCacheObjectGauge,
+		m.DAGRebuildSeconds,
 		m.CacheHandlerOnUpdateSummary,
 		m.EventHandlerOperations,
+		m.statusUpdateTotal,
+		m.statusUpdateSuccess,
+		m.statusUpdateFailed,
+		m.statusUpdateConflict,
+		m.statusUpdateNoop,
+		m.statusUpdateDurationSeconds,
 	)
 }
 
@@ -189,18 +290,34 @@ func (m *Metrics) Zero() {
 	m.SetDAGLastRebuilt(time.Now())
 	m.SetHTTPProxyMetric(zeroes)
 	m.EventHandlerOperations.WithLabelValues("add", "Secret").Inc()
+	m.SetDAGCacheObjectMetric("kind", 1)
+	m.SetStatusUpdateTotal("kind")
+	m.SetStatusUpdateSuccess("kind")
+	m.SetStatusUpdateNoop("kind")
+	m.SetStatusUpdateFailed("kind")
+	m.SetStatusUpdateConflict("kind")
+	m.SetStatusUpdateDuration(time.Nanosecond, "kind", false)
 
-	prometheus.NewTimer(m.CacheHandlerOnUpdateSummary).ObserveDuration()
+	m.CacheHandlerOnUpdateSummary.Observe(0)
+	m.DAGRebuildSeconds.Observe(0)
 }
 
 // SetDAGLastRebuilt records the last time the DAG was rebuilt.
 func (m *Metrics) SetDAGLastRebuilt(ts time.Time) {
-	m.dagRebuildGauge.WithLabelValues().Set(float64(ts.Unix()))
+	m.dagRebuildGauge.Set(float64(ts.Unix()))
 }
 
 // SetDAGRebuiltTotal records the total number of times DAG was rebuilt
 func (m *Metrics) SetDAGRebuiltTotal() {
 	m.dagRebuildTotal.Inc()
+}
+
+// SetDAGCacheObjectMetric records the total number of items that are currently in the DAG cache.
+func (m *Metrics) SetDAGCacheObjectMetric(kind string, count int) {
+	if m == nil {
+		return
+	}
+	m.dagCacheObjectGauge.WithLabelValues(kind).Set(float64(count))
 }
 
 // SetHTTPProxyMetric sets metric values for a set of HTTPProxies
@@ -251,6 +368,34 @@ func (m *Metrics) SetHTTPProxyMetric(metrics RouteMetric) {
 		Orphaned: metrics.Orphaned,
 		Root:     metrics.Root,
 	}
+}
+
+func (m *Metrics) SetStatusUpdateTotal(kind string) {
+	m.statusUpdateTotal.With(prometheus.Labels{"kind": kind}).Inc()
+}
+
+func (m *Metrics) SetStatusUpdateSuccess(kind string) {
+	m.statusUpdateSuccess.With(prometheus.Labels{"kind": kind}).Inc()
+}
+
+func (m *Metrics) SetStatusUpdateNoop(kind string) {
+	m.statusUpdateNoop.With(prometheus.Labels{"kind": kind}).Inc()
+}
+
+func (m *Metrics) SetStatusUpdateFailed(kind string) {
+	m.statusUpdateFailed.With(prometheus.Labels{"kind": kind}).Inc()
+}
+
+func (m *Metrics) SetStatusUpdateConflict(kind string) {
+	m.statusUpdateConflict.With(prometheus.Labels{"kind": kind}).Inc()
+}
+
+func (m *Metrics) SetStatusUpdateDuration(duration time.Duration, kind string, onError bool) {
+	labels := prometheus.Labels{"kind": kind, "error": "false"}
+	if onError {
+		labels["error"] = "true"
+	}
+	m.statusUpdateDurationSeconds.With(labels).Observe(duration.Seconds())
 }
 
 // Handler returns a http Handler for a metrics endpoint.

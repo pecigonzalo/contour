@@ -12,40 +12,41 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package httpproxy
 
 import (
 	"context"
+	"strings"
 
-	. "github.com/onsi/ginkgo"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 )
 
 func testRetryPolicyValidation(namespace string) {
 	Specify("retry policy is validated on create", func() {
 		t := f.T()
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "invalid-retry-on-condition",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				Routes: []contourv1.Route{
+			Spec: contour_v1.HTTPProxySpec{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "foo",
 								Port: 80,
 							},
 						},
-						RetryPolicy: &contourv1.RetryPolicy{
-							RetryOn: []contourv1.RetryOn{
+						RetryPolicy: &contour_v1.RetryPolicy{
+							RetryOn: []contour_v1.RetryOn{
 								"foobar",
 							},
 						},
@@ -55,6 +56,13 @@ func testRetryPolicyValidation(namespace string) {
 		}
 		err := f.Client.Create(context.TODO(), p)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "spec.routes.retryPolicy.retryOn: Unsupported value")
+
+		// Kubernetes 1.24 adds array indexes to the error message, so allow
+		// either format for now.
+		isExpectedErr := func(err error) bool {
+			return strings.Contains(err.Error(), "spec.routes.retryPolicy.retryOn: Unsupported value") ||
+				strings.Contains(err.Error(), "spec.routes[0].retryPolicy.retryOn[0]: Unsupported value")
+		}
+		assert.True(t, isExpectedErr(err))
 	})
 }

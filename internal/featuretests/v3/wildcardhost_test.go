@@ -16,20 +16,20 @@ package v3
 import (
 	"testing"
 
-	envoy_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	envoy_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
-	envoy_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
+	envoy_config_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	envoy_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
+	core_v1 "k8s.io/api/core/v1"
+	networking_v1 "k8s.io/api/networking/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/featuretests"
 	"github.com/projectcontour/contour/internal/fixture"
-	v1 "k8s.io/api/core/v1"
-	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
-
-// Note: Wildcard hostnames are only supported on Ingress resources for now.
 
 // Test that Ingress without TLS secrets generate the
 // appropriate route config.
@@ -38,14 +38,14 @@ func TestIngressWildcardHostHTTP(t *testing.T) {
 	defer done()
 
 	svc := fixture.NewService("svc").
-		WithPorts(v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
+		WithPorts(core_v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
 	rh.OnAdd(svc)
 	defaultBackend := fixture.NewService("default").
-		WithPorts(v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
+		WithPorts(core_v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
 	rh.OnAdd(defaultBackend)
 
 	wildcardIngressV1 := &networking_v1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "wildcard-v1",
 			Namespace: "default",
 		},
@@ -66,7 +66,7 @@ func TestIngressWildcardHostHTTP(t *testing.T) {
 	}
 	rh.OnAdd(wildcardIngressV1)
 
-	c.Request(listenerType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(listenerType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
 			defaultHTTPListener(),
 			statsListener(),
@@ -74,27 +74,28 @@ func TestIngressWildcardHostHTTP(t *testing.T) {
 		TypeUrl: listenerType,
 	})
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http",
-				envoy_v3.VirtualHost("*", &envoy_route_v3.Route{
+				envoy_v3.VirtualHost("*", &envoy_config_route_v3.Route{
 					Match:  routePrefix("/"),
 					Action: routecluster("default/default/80/da39a3ee5e"),
 				}),
 				envoy_v3.VirtualHost("*.foo.com",
-					&envoy_route_v3.Route{
-						Match: &envoy_route_v3.RouteMatch{
-							PathSpecifier: &envoy_route_v3.RouteMatch_Prefix{
+					&envoy_config_route_v3.Route{
+						Match: &envoy_config_route_v3.RouteMatch{
+							PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
 								Prefix: "/",
 							},
-							Headers: []*envoy_route_v3.HeaderMatcher{{
+							Headers: []*envoy_config_route_v3.HeaderMatcher{{
 								Name: ":authority",
-								HeaderMatchSpecifier: &envoy_route_v3.HeaderMatcher_SafeRegexMatch{
-									SafeRegexMatch: &matcher.RegexMatcher{
-										EngineType: &matcher.RegexMatcher_GoogleRe2{
-											GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
+								HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
+									StringMatch: &envoy_matcher_v3.StringMatcher{
+										MatchPattern: &envoy_matcher_v3.StringMatcher_SafeRegex{
+											SafeRegex: &envoy_matcher_v3.RegexMatcher{
+												Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo\\.com(:[0-9]+)?",
+											},
 										},
-										Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo\\.com",
 									},
 								},
 							}},
@@ -108,31 +109,84 @@ func TestIngressWildcardHostHTTP(t *testing.T) {
 	})
 }
 
+// Test that HTTPProxy without TLS secrets generate the
+// appropriate route config.
+func TestHTTPProxyWildcardFQDN(t *testing.T) {
+	rh, c, done := setup(t)
+	defer done()
+
+	svc := fixture.NewService("svc").
+		WithPorts(core_v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
+	rh.OnAdd(svc)
+
+	rh.OnAdd(fixture.NewProxy("wildcard").WithSpec(
+		contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
+				Fqdn: "*.projectcontour.io",
+			}, Routes: []contour_v1.Route{{
+				Services: []contour_v1.Service{{
+					Name: "svc",
+					Port: 80,
+				}},
+			}},
+		}),
+	)
+
+	c.Request(listenerType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
+		Resources: resources(t,
+			defaultHTTPListener(),
+			statsListener(),
+		),
+		TypeUrl: listenerType,
+	})
+
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
+		Resources: resources(t,
+			envoy_v3.RouteConfiguration("ingress_http",
+				envoy_v3.VirtualHost("*.projectcontour.io", &envoy_config_route_v3.Route{
+					Match: &envoy_config_route_v3.RouteMatch{
+						PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
+							Prefix: "/",
+						},
+						Headers: []*envoy_config_route_v3.HeaderMatcher{{
+							Name: ":authority",
+							HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
+								StringMatch: &envoy_matcher_v3.StringMatcher{
+									MatchPattern: &envoy_matcher_v3.StringMatcher_SafeRegex{
+										SafeRegex: &envoy_matcher_v3.RegexMatcher{
+											Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.projectcontour\\.io(:[0-9]+)?",
+										},
+									},
+								},
+							},
+						}},
+					},
+					Action: routecluster("default/svc/80/da39a3ee5e"),
+				}),
+			),
+		),
+		TypeUrl: routeType,
+	})
+}
+
 // Test Ingress with wildcard host and TLS secret for the same wildcard generates
 // the correct filter chain and secret.
 func TestIngressWildcardHostHTTPSWildcardSecret(t *testing.T) {
 	rh, c, done := setup(t)
 	defer done()
 
-	sec := &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "wildcard-tls-secret",
-			Namespace: "default",
-		},
-		Type: "kubernetes.io/tls",
-		Data: featuretests.Secretdata(featuretests.CERTIFICATE, featuretests.RSA_PRIVATE_KEY),
-	}
+	sec := featuretests.TLSSecret(t, "wildcard-tls-secret", &featuretests.ServerCertificate)
 	rh.OnAdd(sec)
 
 	svc := fixture.NewService("svc").
-		WithPorts(v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
+		WithPorts(core_v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
 	rh.OnAdd(svc)
 	defaultBackend := fixture.NewService("default").
-		WithPorts(v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
+		WithPorts(core_v1.ServicePort{Port: 80, TargetPort: intstr.FromInt(8080)})
 	rh.OnAdd(defaultBackend)
 
 	wildcardIngressTLS := &networking_v1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      "wildcard-tls",
 			Namespace: "default",
 		},
@@ -157,15 +211,15 @@ func TestIngressWildcardHostHTTPSWildcardSecret(t *testing.T) {
 	}
 	rh.OnAdd(wildcardIngressTLS)
 
-	c.Request(secretType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(secretType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t, secret(sec)),
 		TypeUrl:   secretType,
 	})
 
-	c.Request(listenerType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(listenerType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
 			defaultHTTPListener(),
-			&envoy_listener_v3.Listener{
+			&envoy_config_listener_v3.Listener{
 				Name:    "ingress_https",
 				Address: envoy_v3.SocketAddress("0.0.0.0", 8443),
 				ListenerFilters: envoy_v3.ListenerFilters(
@@ -176,30 +230,31 @@ func TestIngressWildcardHostHTTPSWildcardSecret(t *testing.T) {
 						httpsFilterFor("*.foo-tls.com"),
 						nil, "h2", "http/1.1"),
 				),
-				SocketOptions: envoy_v3.TCPKeepaliveSocketOptions(),
+				SocketOptions: envoy_v3.NewSocketOptions().TCPKeepalive().Build(),
 			},
 			statsListener(),
 		),
 		TypeUrl: listenerType,
 	})
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("https/*.foo-tls.com",
 				envoy_v3.VirtualHost("*.foo-tls.com",
-					&envoy_route_v3.Route{
-						Match: &envoy_route_v3.RouteMatch{
-							PathSpecifier: &envoy_route_v3.RouteMatch_Prefix{
+					&envoy_config_route_v3.Route{
+						Match: &envoy_config_route_v3.RouteMatch{
+							PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
 								Prefix: "/",
 							},
-							Headers: []*envoy_route_v3.HeaderMatcher{{
+							Headers: []*envoy_config_route_v3.HeaderMatcher{{
 								Name: ":authority",
-								HeaderMatchSpecifier: &envoy_route_v3.HeaderMatcher_SafeRegexMatch{
-									SafeRegexMatch: &matcher.RegexMatcher{
-										EngineType: &matcher.RegexMatcher_GoogleRe2{
-											GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
+								HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
+									StringMatch: &envoy_matcher_v3.StringMatcher{
+										MatchPattern: &envoy_matcher_v3.StringMatcher_SafeRegex{
+											SafeRegex: &envoy_matcher_v3.RegexMatcher{
+												Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo-tls\\.com(:[0-9]+)?",
+											},
 										},
-										Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo-tls\\.com",
 									},
 								},
 							}},
@@ -209,24 +264,25 @@ func TestIngressWildcardHostHTTPSWildcardSecret(t *testing.T) {
 				),
 			),
 			envoy_v3.RouteConfiguration("ingress_http",
-				envoy_v3.VirtualHost("*", &envoy_route_v3.Route{
+				envoy_v3.VirtualHost("*", &envoy_config_route_v3.Route{
 					Match:  routePrefix("/"),
 					Action: routecluster("default/default/80/da39a3ee5e"),
 				}),
 				envoy_v3.VirtualHost("*.foo-tls.com",
-					&envoy_route_v3.Route{
-						Match: &envoy_route_v3.RouteMatch{
-							PathSpecifier: &envoy_route_v3.RouteMatch_Prefix{
+					&envoy_config_route_v3.Route{
+						Match: &envoy_config_route_v3.RouteMatch{
+							PathSpecifier: &envoy_config_route_v3.RouteMatch_Prefix{
 								Prefix: "/",
 							},
-							Headers: []*envoy_route_v3.HeaderMatcher{{
+							Headers: []*envoy_config_route_v3.HeaderMatcher{{
 								Name: ":authority",
-								HeaderMatchSpecifier: &envoy_route_v3.HeaderMatcher_SafeRegexMatch{
-									SafeRegexMatch: &matcher.RegexMatcher{
-										EngineType: &matcher.RegexMatcher_GoogleRe2{
-											GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
+								HeaderMatchSpecifier: &envoy_config_route_v3.HeaderMatcher_StringMatch{
+									StringMatch: &envoy_matcher_v3.StringMatcher{
+										MatchPattern: &envoy_matcher_v3.StringMatcher_SafeRegex{
+											SafeRegex: &envoy_matcher_v3.RegexMatcher{
+												Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo-tls\\.com(:[0-9]+)?",
+											},
 										},
-										Regex: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.foo-tls\\.com",
 									},
 								},
 							}},

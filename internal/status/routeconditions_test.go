@@ -17,47 +17,43 @@ import (
 	"testing"
 	"time"
 
-	projectcontour "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/internal/k8s"
-
 	"github.com/stretchr/testify/assert"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	gatewayapi_v1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
+	"github.com/stretchr/testify/require"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/projectcontour/contour/internal/gatewayapi"
+	"github.com/projectcontour/contour/internal/k8s"
 )
 
 func TestHTTPRouteAddCondition(t *testing.T) {
-
-	var testGeneration int64 = 7
-
-	simpleValidCondition := metav1.Condition{
-		Type:               string(gatewayapi_v1alpha1.ConditionRouteAdmitted),
-		Status:             projectcontour.ConditionTrue,
-		Reason:             "Valid",
-		Message:            "Valid HTTPRoute",
-		ObservedGeneration: testGeneration,
-	}
-
-	httpRouteUpdate := RouteConditionsUpdate{
+	httpRouteUpdate := RouteStatusUpdate{
 		FullName:   k8s.NamespacedNameFrom("test/test"),
-		Generation: testGeneration,
-		Conditions: make(map[gatewayapi_v1alpha1.RouteConditionType]metav1.Condition),
+		Generation: 7,
 	}
 
-	got := httpRouteUpdate.AddCondition(gatewayapi_v1alpha1.ConditionRouteAdmitted, metav1.ConditionTrue, "Valid", "Valid HTTPRoute")
+	parentRef := gatewayapi.GatewayParentRef("projectcontour", "contour")
 
-	assert.Equal(t, simpleValidCondition.Message, got.Message)
-	assert.Equal(t, simpleValidCondition.Reason, got.Reason)
-	assert.Equal(t, simpleValidCondition.Type, got.Type)
-	assert.Equal(t, simpleValidCondition.Status, got.Status)
-	assert.Equal(t, simpleValidCondition.ObservedGeneration, got.ObservedGeneration)
+	rpsUpdate := httpRouteUpdate.StatusUpdateFor(parentRef)
+
+	rpsUpdate.AddCondition(gatewayapi_v1.RouteConditionAccepted, meta_v1.ConditionTrue, "Valid", "Valid HTTPRoute")
+
+	require.Len(t, httpRouteUpdate.ConditionsForParentRef(parentRef), 1)
+	got := httpRouteUpdate.ConditionsForParentRef(parentRef)[0]
+
+	assert.EqualValues(t, gatewayapi_v1.RouteConditionAccepted, got.Type)
+	assert.EqualValues(t, meta_v1.ConditionTrue, got.Status)
+	assert.EqualValues(t, "Valid", got.Reason)
+	assert.EqualValues(t, "Valid HTTPRoute", got.Message)
+	assert.EqualValues(t, 7, got.ObservedGeneration)
 }
 
-func newCondition(t string, status metav1.ConditionStatus, reason, msg string, lt time.Time) metav1.Condition {
-	return metav1.Condition{
+func newCondition(t string, status meta_v1.ConditionStatus, reason, msg string, lt time.Time) meta_v1.Condition {
+	return meta_v1.Condition{
 		Type:               t,
 		Status:             status,
 		Reason:             reason,
 		Message:            msg,
-		LastTransitionTime: metav1.NewTime(lt),
+		LastTransitionTime: meta_v1.NewTime(lt),
 	}
 }

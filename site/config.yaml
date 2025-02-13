@@ -4,7 +4,6 @@ title: "Contour"
 theme: "contour"
 outputs:
   home: ["HTML", "REDIRECTS"]
-  posts: ["HTML", "RSS"]
 pygmentsCodefences: true
 pygmentsStyle: "pygments"
 markup:
@@ -27,37 +26,29 @@ params:
   base_url: "https://projectcontour.io"
   twitter_url: "https://twitter.com/projectcontour"
   github_url: "https://github.com/projectcontour/contour"
+  github_raw_url: "https://raw.githubusercontent.com/projectcontour/contour"
   slack_url: "https://kubernetes.slack.com/messages/contour"
-  latest_version: v1.18.2
+  latest_version: "1.30"
   use_advanced_docs: true
   docs_right_sidebar: true
   docs_search: true
   docs_search_index_name: projectcontour
-  docs_search_api_key: 5e2fa46757e313755936b88feae652d1
+  docs_search_api_key: c334c965f1dae0684bc36ec1f66f89a1
+  docs_search_app_id: IW9YQMJ8HH
   docs_versioning: true
   docs_versions:
-    - main
-    - v1.18.2
-    - v1.18.1
-    - v1.18.0
-    - v1.17.2
-    - v1.17.1
-    - v1.17.0
-    - v1.16.1
-    - v1.16.0
-    - v1.15.2
-    - v1.15.1
-    - v1.15.0
-    - v1.14.2
-    - v1.14.1
-    - v1.14.0
-    - v1.13.1
-    - v1.13.0
-    - v1.12.0
-    - v1.11.0
-    - v1.10.1
-    - v1.10.0
-    - v1.9.0
+  - main
+  - "1.30"
+  - "1.29"
+  - "1.28"
+  - "1.27"
+  - "1.26"
+  - "1.25"
+  - "1.24"
+  - "1.23"
+  - "1.22"
+  - "1.21"
+  - "1.20"
 mediaTypes:
   "text/netlify":
     delimiter: ""
@@ -71,5 +62,3 @@ outputFormats:
 collections:
   guides:
     output: true
-permalinks:
-  posts: /:slug

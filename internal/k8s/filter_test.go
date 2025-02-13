@@ -16,9 +16,10 @@ package k8s
 import (
 	"testing"
 
-	"github.com/projectcontour/contour/internal/fixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/projectcontour/contour/internal/fixture"
 )
 
 type countHandler struct {
@@ -27,15 +28,15 @@ type countHandler struct {
 	deleted int
 }
 
-func (t *countHandler) OnAdd(_ interface{}) {
+func (t *countHandler) OnAdd(_ any, _ bool) {
 	t.added++
 }
 
-func (t *countHandler) OnUpdate(_, _ interface{}) {
+func (t *countHandler) OnUpdate(_, _ any) {
 	t.updated++
 }
 
-func (t *countHandler) OnDelete(_ interface{}) {
+func (t *countHandler) OnDelete(_ any) {
 	t.deleted++
 }
 
@@ -49,10 +50,10 @@ func TestNamespaceFilter(t *testing.T) {
 	// doesn't match the filter, so should not update the count.
 	// The second call is a match and does update the counter.
 
-	filter.OnAdd(fixture.NewProxy("ns3/proxy"))
+	filter.OnAdd(fixture.NewProxy("ns3/proxy"), false)
 	assert.Equal(t, 0, counter.added)
 
-	filter.OnAdd(fixture.NewProxy("ns1/proxy"))
+	filter.OnAdd(fixture.NewProxy("ns1/proxy"), false)
 	assert.Equal(t, 1, counter.added)
 
 	filter.OnUpdate(fixture.NewProxy("ns3/proxy"), fixture.NewProxy("ns3/proxy"))
@@ -66,5 +67,4 @@ func TestNamespaceFilter(t *testing.T) {
 
 	filter.OnDelete(fixture.NewProxy("ns1/proxy"))
 	assert.Equal(t, 1, counter.deleted)
-
 }

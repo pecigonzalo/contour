@@ -16,38 +16,29 @@ package v3
 import (
 	"testing"
 
-	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
+	envoy_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
+
 	"github.com/projectcontour/contour/internal/protobuf"
 )
 
 func TestSafeRegexMatch(t *testing.T) {
 	tests := map[string]struct {
 		regex string
-		want  *matcher.RegexMatcher
+		want  *envoy_matcher_v3.RegexMatcher
 	}{
 		"blank regex": {
 			regex: "",
-			want: &matcher.RegexMatcher{
-				EngineType: &matcher.RegexMatcher_GoogleRe2{
-					GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
-				},
-			},
+			want:  &envoy_matcher_v3.RegexMatcher{},
 		},
 		"simple": {
 			regex: "chrome",
-			want: &matcher.RegexMatcher{
-				EngineType: &matcher.RegexMatcher_GoogleRe2{
-					GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
-				},
+			want: &envoy_matcher_v3.RegexMatcher{
 				Regex: "chrome",
 			},
 		},
 		"regex meta": {
 			regex: "[a-z]+$",
-			want: &matcher.RegexMatcher{
-				EngineType: &matcher.RegexMatcher_GoogleRe2{
-					GoogleRe2: &matcher.RegexMatcher_GoogleRE2{},
-				},
+			want: &envoy_matcher_v3.RegexMatcher{
 				Regex: "[a-z]+$", // meta characters are not escaped.
 			},
 		},
@@ -55,7 +46,7 @@ func TestSafeRegexMatch(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := SafeRegexMatch(tc.regex)
+			got := safeRegexMatch(tc.regex)
 			protobuf.ExpectEqual(t, tc.want, got)
 		})
 	}

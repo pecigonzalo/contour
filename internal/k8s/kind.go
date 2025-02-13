@@ -14,41 +14,69 @@
 package k8s
 
 import (
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
-	v1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
 	networking_v1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
-	gatewayapi_v1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayapi_v1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayapi_v1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
+	gatewayapi_v1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 )
 
 // KindOf returns the kind string for the given Kubernetes object.
 //
-// The API machinery doesn't populate the metav1.TypeMeta field for
+// The API machinery doesn't populate the meta_v1.TypeMeta field for
 // objects, so we have to use a type assertion to detect kinds that
 // we care about.
-func KindOf(obj interface{}) string {
-	gvk, _, err := scheme.Scheme.ObjectKinds(obj.(runtime.Object))
+func KindOf(obj any) string {
+	object, ok := obj.(runtime.Object)
+	if !ok {
+		return ""
+	}
+	gvk, _, err := scheme.Scheme.ObjectKinds(object)
 	if err != nil {
 		switch obj := obj.(type) {
-		case *v1.Secret:
+		case *core_v1.Secret:
 			return "Secret"
-		case *v1.Service:
+		case *core_v1.Service:
 			return "Service"
-		case *v1.Endpoints:
+		case *core_v1.Endpoints:
 			return "Endpoints"
 		case *networking_v1.Ingress:
 			return "Ingress"
-		case *contour_api_v1.HTTPProxy:
+		case *contour_v1.HTTPProxy:
 			return "HTTPProxy"
-		case *gatewayapi_v1alpha1.HTTPRoute:
+		case *gatewayapi_v1.HTTPRoute:
 			return "HTTPRoute"
-		case *contour_api_v1.TLSCertificateDelegation:
+		case *gatewayapi_v1.GRPCRoute:
+			return "GRPCRoute"
+		case *gatewayapi_v1alpha2.TLSRoute:
+			return "TLSRoute"
+		case *gatewayapi_v1alpha2.TCPRoute:
+			return "TCPRoute"
+		case *gatewayapi_v1.Gateway:
+			return "Gateway"
+		case *gatewayapi_v1.GatewayClass:
+			return "GatewayClass"
+		case *gatewayapi_v1beta1.ReferenceGrant:
+			return "ReferenceGrant"
+		case *gatewayapi_v1alpha3.BackendTLSPolicy:
+			return "BackendTLSPolicy"
+		case *contour_v1.TLSCertificateDelegation:
 			return "TLSCertificateDelegation"
-		case *v1alpha1.ExtensionService:
+		case *contour_v1alpha1.ExtensionService:
 			return "ExtensionService"
+		case *contour_v1alpha1.ContourConfiguration:
+			return "ContourConfiguration"
+		case *contour_v1alpha1.ContourDeployment:
+			return "ContourDeployment"
+		case *core_v1.Namespace:
+			return "Namespace"
 		case *unstructured.Unstructured:
 			return obj.GetKind()
 		default:
@@ -62,20 +90,19 @@ func KindOf(obj interface{}) string {
 }
 
 // VersionOf returns the GroupVersion string for the given Kubernetes object.
-//
-func VersionOf(obj interface{}) string {
-	//If err is not nil we have the GVK and we can use it. Otherwise we're going to use switch case method as failover
+func VersionOf(obj any) string {
+	// If err is not nil we have the GVK and we can use it. Otherwise we're going to use switch case method as failover
 	gvk, _, err := scheme.Scheme.ObjectKinds(obj.(runtime.Object))
 	if err != nil {
 		switch obj := obj.(type) {
-		case *v1.Secret, *v1.Service, *v1.Endpoints:
-			return v1.SchemeGroupVersion.String()
+		case *core_v1.Secret, *core_v1.Service, *core_v1.Endpoints:
+			return core_v1.SchemeGroupVersion.String()
 		case *networking_v1.Ingress:
 			return networking_v1.SchemeGroupVersion.String()
-		case *contour_api_v1.HTTPProxy, *contour_api_v1.TLSCertificateDelegation:
-			return contour_api_v1.GroupVersion.String()
-		case *v1alpha1.ExtensionService:
-			return v1alpha1.GroupVersion.String()
+		case *contour_v1.HTTPProxy, *contour_v1.TLSCertificateDelegation:
+			return contour_v1.GroupVersion.String()
+		case *contour_v1alpha1.ExtensionService:
+			return contour_v1alpha1.GroupVersion.String()
 		case *unstructured.Unstructured:
 			return obj.GetAPIVersion()
 		default:

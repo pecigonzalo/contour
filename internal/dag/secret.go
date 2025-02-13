@@ -21,68 +21,80 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
 )
 
-// CACertificateKey is the key name for accessing TLS CA certificate bundles in Kubernetes Secrets.
-const CACertificateKey = "ca.crt"
+const (
+	// CACertificateKey is the key name for accessing TLS CA certificate bundles in Kubernetes Secrets.
+	CACertificateKey = "ca.crt"
 
-// isValidSecret returns true if the secret is interesting and well
-// formed. TLS certificate/key pairs must be secrets of type
-// "kubernetes.io/tls". Certificate bundles may be "kubernetes.io/tls"
-// or generic (type "Opaque" or "") secrets.
-func isValidSecret(secret *v1.Secret) (bool, error) {
-	switch secret.Type {
-	// We will accept TLS secrets that also have the 'ca.crt' payload.
-	case v1.SecretTypeTLS:
-		data, ok := secret.Data[v1.TLSCertKey]
-		if !ok {
-			return false, errors.New("missing TLS certificate")
-		}
+	// CRLKey is the key name for accessing CRL bundles in Kubernetes Secrets.
+	CRLKey = "crl.pem"
+)
 
-		if err := validateCertificate(data); err != nil {
-			return false, fmt.Errorf("invalid TLS certificate: %v", err)
-		}
-
-		data, ok = secret.Data[v1.TLSPrivateKeyKey]
-		if !ok {
-			return false, errors.New("missing TLS private key")
-		}
-
-		if err := validatePrivateKey(data); err != nil {
-			return false, fmt.Errorf("invalid TLS private key: %v", err)
-		}
-
-	// Generic secrets may have a 'ca.crt' only.
-	case v1.SecretTypeOpaque, "":
-		if _, ok := secret.Data[v1.TLSCertKey]; ok {
-			return false, nil
-		}
-
-		if _, ok := secret.Data[v1.TLSPrivateKeyKey]; ok {
-			return false, nil
-		}
-
-		if data := secret.Data[CACertificateKey]; len(data) == 0 {
-			return false, nil
-		}
-
-	default:
-		return false, nil
-
+// validTLSSecret returns an error if the Secret is not of type TLS or Opaque or
+// if it doesn't contain valid certificate and private key material in
+// the tls.crt and tls.key keys.
+func validTLSSecret(secret *core_v1.Secret) error {
+	if secret.Type != core_v1.SecretTypeTLS && secret.Type != core_v1.SecretTypeOpaque {
+		return fmt.Errorf("secret type is not %q or %q", core_v1.SecretTypeTLS, core_v1.SecretTypeOpaque)
 	}
 
-	// If the secret we propose to accept has a CA bundle key,
-	// validate that it is PEM certificate(s). Note that the
-	// CA bundle on TLS secrets is allowed to be an empty string
-	// (see https://github.com/projectcontour/contour/issues/1644).
-	if data := secret.Data[CACertificateKey]; len(data) > 0 {
-		if err := validateCertificate(data); err != nil {
-			return false, fmt.Errorf("invalid CA certificate bundle: %v", err)
-		}
+	data, ok := secret.Data[core_v1.TLSCertKey]
+	if !ok {
+		return errors.New("missing TLS certificate")
 	}
 
-	return true, nil
+	if err := validateServingBundle(data); err != nil {
+		return fmt.Errorf("invalid TLS certificate: %v", err)
+	}
+
+	data, ok = secret.Data[core_v1.TLSPrivateKeyKey]
+	if !ok {
+		return errors.New("missing TLS private key")
+	}
+
+	if err := validatePrivateKey(data); err != nil {
+		return fmt.Errorf("invalid TLS private key: %v", err)
+	}
+
+	return nil
+}
+
+// validCASecret returns an error if the Secret is not of type TLS or Opaque or
+// if it doesn't contain a valid CA bundle in the ca.crt key.
+func validCASecret(secret *core_v1.Secret) error {
+	if secret.Type != core_v1.SecretTypeTLS && secret.Type != core_v1.SecretTypeOpaque {
+		return fmt.Errorf("secret type is not %q or %q", core_v1.SecretTypeTLS, core_v1.SecretTypeOpaque)
+	}
+
+	if len(secret.Data[CACertificateKey]) == 0 {
+		return fmt.Errorf("empty %q key", CACertificateKey)
+	}
+
+	if err := validateCABundle(secret.Data[CACertificateKey]); err != nil {
+		return fmt.Errorf("invalid CA certificate bundle: %v", err)
+	}
+
+	return nil
+}
+
+// validCRLSecret returns an error if the Secret is not of type TLS or Opaque or
+// if it doesn't contain a valid CRL in the crl.pem key.
+func validCRLSecret(secret *core_v1.Secret) error {
+	if secret.Type != core_v1.SecretTypeTLS && secret.Type != core_v1.SecretTypeOpaque {
+		return fmt.Errorf("secret type is not %q or %q", core_v1.SecretTypeTLS, core_v1.SecretTypeOpaque)
+	}
+
+	if len(secret.Data[CRLKey]) == 0 {
+		return fmt.Errorf("empty %q key", CRLKey)
+	}
+
+	if err := validateCRL(secret.Data[CRLKey]); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // containsPEMHeader returns true if the given slice contains a string
@@ -114,8 +126,14 @@ func containsPEMHeader(data []byte) bool {
 	return true
 }
 
-func validateCertificate(data []byte) error {
+// validateServingBundle validates that a PEM bundle contains at least one
+// certificate, and that the first certificate has a
+// CN or SAN set.
+func validateServingBundle(data []byte) error {
 	var exists bool
+
+	// The first PEM in a bundle should always have a CN set.
+	i := 0
 
 	for containsPEMHeader(data) {
 		var block *pem.Block
@@ -131,8 +149,35 @@ func validateCertificate(data []byte) error {
 			return err
 		}
 
-		if !hasCommonName(cert) && !hasSubjectAltNames(cert) {
+		// Only run the CN and SAN checks on the first cert in a bundle
+		if i == 0 && !hasCommonName(cert) && !hasSubjectAltNames(cert) {
 			return errors.New("certificate has no common name or subject alt name")
+		}
+
+		exists = true
+		i++
+	}
+
+	if !exists {
+		return errors.New("failed to locate certificate")
+	}
+
+	return nil
+}
+
+// validateCABundle validates that a PEM bundle contains at least
+// one valid certificate.
+func validateCABundle(data []byte) error {
+	var exists bool
+
+	for containsPEMHeader(data) {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			return errors.New("failed to parse PEM block")
+		}
+		if block.Type != "CERTIFICATE" {
+			return fmt.Errorf("unexpected block type '%s'", block.Type)
 		}
 
 		exists = true
@@ -141,7 +186,6 @@ func validateCertificate(data []byte) error {
 	if !exists {
 		return errors.New("failed to locate certificate")
 	}
-
 	return nil
 }
 
@@ -164,12 +208,12 @@ func validatePrivateKey(data []byte) error {
 		}
 		switch block.Type {
 		case "PRIVATE KEY":
-			if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+			if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
 				return err
 			}
 			keys++
 		case "RSA PRIVATE KEY":
-			if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+			if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err != nil {
 				return err
 			}
 			keys++
@@ -193,4 +237,20 @@ func validatePrivateKey(data []byte) error {
 	default:
 		return errors.New("multiple private keys")
 	}
+}
+
+// validateCRL checks that PEM file contains at least one CRL.
+func validateCRL(data []byte) error {
+	for containsPEMHeader(data) {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			return errors.New("failed to parse PEM block")
+		}
+		if block.Type == "X509 CRL" {
+			return nil
+		}
+	}
+
+	return errors.New("failed to locate CRL")
 }

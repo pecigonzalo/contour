@@ -3,10 +3,8 @@
 vendor/
 .vs/
 .idea/
-# TODO(youngnick): Move these out of the repo root.
-localenvoyconfig.yaml
-securelocalenvoyconfig.yaml
 ./certs/
+/contour
 
 # Netlify stuff
 .vagrant
@@ -27,6 +25,9 @@ site/public
 
 # Saved container image archive
 image/
+
+# Gateway API conformance report output
+gateway-conformance-report/
 
 # Compiled tests from Ginkgo
 *.test

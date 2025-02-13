@@ -16,20 +16,31 @@ package dag
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
-	"github.com/projectcontour/contour/internal/annotation"
-	v1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/projectcontour/contour/internal/annotation"
+	"github.com/projectcontour/contour/internal/xds"
 )
 
 // EnsureService looks for a Kubernetes service in the cache matching the provided
 // namespace, name and port, and returns a DAG service for it. If a matching service
 // cannot be found in the cache, an error is returned.
-func (dag *DAG) EnsureService(meta types.NamespacedName, port intstr.IntOrString, cache *KubernetesCache, enableExternalNameSvc bool) (*Service, error) {
-	svc, svcPort, err := cache.LookupService(meta, port)
+func (d *DAG) EnsureService(meta types.NamespacedName, port, healthPort int, cache *KubernetesCache, enableExternalNameSvc bool) (*Service, error) {
+	svc, svcPort, err := cache.LookupService(meta, intstr.FromInt(port))
 	if err != nil {
 		return nil, err
+	}
+
+	healthSvcPort := svcPort
+	if healthPort != 0 && healthPort != port {
+		_, healthSvcPort, err = cache.LookupService(meta, intstr.FromInt(healthPort))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = validateExternalName(svc, enableExternalNameSvc)
@@ -49,19 +60,22 @@ func (dag *DAG) EnsureService(meta types.NamespacedName, port intstr.IntOrString
 			ServiceName:      svc.Name,
 			ServiceNamespace: svc.Namespace,
 			ServicePort:      svcPort,
+			HealthPort:       healthSvcPort,
 			Weight:           1,
 		},
-		Protocol:           upstreamProtocol(svc, svcPort),
-		MaxConnections:     annotation.MaxConnections(svc),
-		MaxPendingRequests: annotation.MaxPendingRequests(svc),
-		MaxRequests:        annotation.MaxRequests(svc),
-		MaxRetries:         annotation.MaxRetries(svc),
-		ExternalName:       externalName(svc),
+		Protocol: upstreamProtocol(svc, svcPort),
+		CircuitBreakers: CircuitBreakers{
+			MaxConnections:        annotation.MaxConnections(svc),
+			MaxPendingRequests:    annotation.MaxPendingRequests(svc),
+			MaxRequests:           annotation.MaxRequests(svc),
+			PerHostMaxConnections: annotation.PerHostMaxConnections(svc),
+			MaxRetries:            annotation.MaxRetries(svc),
+		},
+		ExternalName: externalName(svc),
 	}, nil
 }
 
-func validateExternalName(svc *v1.Service, enableExternalNameSvc bool) error {
-
+func validateExternalName(svc *core_v1.Service, enableExternalNameSvc bool) error {
 	// If this isn't an ExternalName Service, we're all good here.
 	en := externalName(svc)
 	if en == "" {
@@ -92,147 +106,289 @@ func validateExternalName(svc *v1.Service, enableExternalNameSvc bool) error {
 	return nil
 }
 
-func upstreamProtocol(svc *v1.Service, port v1.ServicePort) string {
-	up := annotation.ParseUpstreamProtocols(svc.Annotations)
-	protocol := up[port.Name]
-	if protocol == "" {
-		protocol = up[strconv.Itoa(int(port.Port))]
-	}
-	return protocol
+// the ServicePort's AppProtocol must be one of the these.
+const (
+	protoK8sH2C = "kubernetes.io/h2c"
+	protoK8sWS  = "kubernetes.io/ws"
+	protoHTTPS  = "https"
+	protoHTTP   = "http"
+)
+
+func toContourProtocol(appProtocol string) (string, bool) {
+	proto, ok := map[string]string{
+		// *NOTE: for gateway-api: the websocket is enabled by default
+		protoK8sWS:  "",
+		protoK8sH2C: "h2c",
+		protoHTTP:   "",
+		protoHTTPS:  "tls",
+	}[appProtocol]
+	return proto, ok
 }
 
-func externalName(svc *v1.Service) string {
-	if svc.Spec.Type != v1.ServiceTypeExternalName {
+func upstreamProtocol(svc *core_v1.Service, port core_v1.ServicePort) string {
+	// if appProtocol is not nil, check it only
+	if port.AppProtocol != nil {
+		proto, _ := toContourProtocol(*port.AppProtocol)
+		return proto
+	}
+
+	up := annotation.ParseUpstreamProtocols(svc.Annotations)
+	proto := up[port.Name]
+	if proto == "" {
+		proto = up[strconv.Itoa(int(port.Port))]
+	}
+	return proto
+}
+
+func externalName(svc *core_v1.Service) string {
+	if svc.Spec.Type != core_v1.ServiceTypeExternalName {
 		return ""
 	}
 	return svc.Spec.ExternalName
 }
 
-// GetSecureVirtualHosts returns all secure virtual hosts in the DAG.
-func (dag *DAG) GetSecureVirtualHosts() map[ListenerName]*SecureVirtualHost {
-	getter := svhostGetter(map[ListenerName]*SecureVirtualHost{})
-	dag.Visit(getter.visit)
-	return getter
+// GetSingleListener returns the sole listener with the specified protocol,
+// or an error if there is not exactly one listener with that protocol.
+func (d *DAG) GetSingleListener(protocol string) (*Listener, error) {
+	var res *Listener
+
+	for _, listener := range d.Listeners {
+		if listener.Protocol != protocol {
+			continue
+		}
+
+		if res != nil {
+			return nil, fmt.Errorf("more than one %s listener configured", strings.ToUpper(protocol))
+		}
+
+		res = listener
+	}
+
+	if res == nil {
+		return nil, fmt.Errorf("no %s listener configured", strings.ToUpper(protocol))
+	}
+
+	return res, nil
 }
 
 // GetSecureVirtualHost returns the secure virtual host in the DAG that
 // matches the provided name, or nil if no matching secure virtual host
 // is found.
-func (dag *DAG) GetSecureVirtualHost(ln ListenerName) *SecureVirtualHost {
-	return dag.GetSecureVirtualHosts()[ln]
+func (d *DAG) GetSecureVirtualHost(listener, hostname string) *SecureVirtualHost {
+	return d.Listeners[listener].svhostsByName[hostname]
 }
 
 // EnsureSecureVirtualHost adds a secure virtual host with the provided
 // name to the DAG if it does not already exist, and returns it.
-func (dag *DAG) EnsureSecureVirtualHost(ln ListenerName) *SecureVirtualHost {
-	if svh := dag.GetSecureVirtualHost(ln); svh != nil {
+func (d *DAG) EnsureSecureVirtualHost(listener, hostname string) *SecureVirtualHost {
+	if svh := d.GetSecureVirtualHost(listener, hostname); svh != nil {
 		return svh
 	}
 
 	svh := &SecureVirtualHost{
 		VirtualHost: VirtualHost{
-			Name:         ln.Name,
-			ListenerName: ln.ListenerName,
+			Name: hostname,
 		},
 	}
-	dag.AddRoot(svh)
+
+	d.Listeners[listener].SecureVirtualHosts = append(d.Listeners[listener].SecureVirtualHosts, svh)
+	d.Listeners[listener].svhostsByName[svh.Name] = svh
 	return svh
-}
-
-// svhostGetter is a visitor that gets all secure virtual hosts
-// in the DAG.
-type svhostGetter map[ListenerName]*SecureVirtualHost
-
-func (s svhostGetter) visit(vertex Vertex) {
-	switch obj := vertex.(type) {
-	case *SecureVirtualHost:
-		s[ListenerName{Name: obj.Name, ListenerName: obj.VirtualHost.ListenerName}] = obj
-	default:
-		vertex.Visit(s.visit)
-	}
-}
-
-// GetVirtualHosts returns all virtual hosts in the DAG.
-func (dag *DAG) GetVirtualHosts() map[ListenerName]*VirtualHost {
-	getter := vhostGetter(map[ListenerName]*VirtualHost{})
-	dag.Visit(getter.visit)
-	return getter
 }
 
 // GetVirtualHost returns the virtual host in the DAG that matches the
 // provided name, or nil if no matching virtual host is found.
-func (dag *DAG) GetVirtualHost(ln ListenerName) *VirtualHost {
-	return dag.GetVirtualHosts()[ln]
+func (d *DAG) GetVirtualHost(listener, hostname string) *VirtualHost {
+	return d.Listeners[listener].vhostsByName[hostname]
 }
 
 // EnsureVirtualHost adds a virtual host with the provided name to the
 // DAG if it does not already exist, and returns it.
-func (dag *DAG) EnsureVirtualHost(ln ListenerName) *VirtualHost {
-	if vhost := dag.GetVirtualHost(ln); vhost != nil {
+func (d *DAG) EnsureVirtualHost(listener, hostname string) *VirtualHost {
+	if vhost := d.GetVirtualHost(listener, hostname); vhost != nil {
 		return vhost
 	}
 
 	vhost := &VirtualHost{
-		Name:         ln.Name,
-		ListenerName: ln.ListenerName,
+		Name: hostname,
 	}
-	dag.AddRoot(vhost)
+
+	d.Listeners[listener].VirtualHosts = append(d.Listeners[listener].VirtualHosts, vhost)
+	d.Listeners[listener].vhostsByName[vhost.Name] = vhost
 	return vhost
 }
 
-// vhostGetter is a visitor that gets all virtual hosts
-// in the DAG.
-type vhostGetter map[ListenerName]*VirtualHost
+func (d *DAG) GetClusters() []*Cluster {
+	var res []*Cluster
 
-func (v vhostGetter) visit(vertex Vertex) {
-	switch obj := vertex.(type) {
-	case *VirtualHost:
-		v[ListenerName{Name: obj.Name, ListenerName: obj.ListenerName}] = obj
-	default:
-		vertex.Visit(v.visit)
+	for _, listener := range d.Listeners {
+		if listener.TCPProxy != nil {
+			res = append(res, listener.TCPProxy.Clusters...)
+		}
+
+		for _, vhost := range listener.VirtualHosts {
+			for _, route := range vhost.Routes {
+				res = append(res, route.Clusters...)
+
+				for _, mp := range route.MirrorPolicies {
+					if mp.Cluster != nil {
+						res = append(res, mp.Cluster)
+					}
+				}
+			}
+		}
+
+		for _, vhost := range listener.SecureVirtualHosts {
+			for _, route := range vhost.Routes {
+				res = append(res, route.Clusters...)
+
+				for _, mp := range route.MirrorPolicies {
+					if mp.Cluster != nil {
+						res = append(res, mp.Cluster)
+					}
+				}
+			}
+
+			if vhost.TCPProxy != nil {
+				res = append(res, vhost.TCPProxy.Clusters...)
+			}
+		}
 	}
+
+	return res
+}
+
+func (d *DAG) GetDNSNameClusters() []*DNSNameCluster {
+	var res []*DNSNameCluster
+
+	for _, listener := range d.Listeners {
+		for _, svhost := range listener.SecureVirtualHosts {
+			for _, provider := range svhost.JWTProviders {
+				provider := provider
+				res = append(res, &provider.RemoteJWKS.Cluster)
+			}
+		}
+	}
+
+	return res
+}
+
+func (d *DAG) GetServiceClusters() []*ServiceCluster {
+	var res []*ServiceCluster
+
+	for _, cluster := range d.GetClusters() {
+		// We do not use EDS with clusters configured for ExternalName
+		// Services, so skip over returning these. We do not want to
+		// return extra endpoint resources in a snapshot that Envoy
+		// does not request. Especially with ADS, this is discouraged.
+		if len(cluster.Upstream.ExternalName) > 0 {
+			continue
+		}
+
+		// A Service has only one WeightedService entry. Fake up a
+		// ServiceCluster so that the visitor can pretend to not
+		// know this.
+		c := &ServiceCluster{
+			ClusterName: xds.ClusterLoadAssignmentName(
+				types.NamespacedName{
+					Name:      cluster.Upstream.Weighted.ServiceName,
+					Namespace: cluster.Upstream.Weighted.ServiceNamespace,
+				},
+				cluster.Upstream.Weighted.ServicePort.Name),
+			Services: []WeightedService{
+				cluster.Upstream.Weighted,
+			},
+		}
+
+		res = append(res, c)
+	}
+
+	for _, ec := range d.ExtensionClusters {
+		res = append(res, &ec.Upstream)
+	}
+
+	return res
 }
 
 // GetExtensionClusters returns all extension clusters in the DAG.
-func (dag *DAG) GetExtensionClusters() map[string]*ExtensionCluster {
-	getter := extensionClusterGetter(map[string]*ExtensionCluster{})
-	dag.Visit(getter.visit)
-	return getter
+func (d *DAG) GetExtensionClusters() map[string]*ExtensionCluster {
+	// TODO for DAG consumers, this should iterate
+	// over Listeners.SecureVirtualHosts and get
+	// AuthorizationServices.
+	res := map[string]*ExtensionCluster{}
+	for _, ec := range d.ExtensionClusters {
+		res[ec.Name] = ec
+	}
+	return res
+}
+
+func (d *DAG) GetSecrets() []*Secret {
+	var res []*Secret
+	for _, l := range d.Listeners {
+		for _, svh := range l.SecureVirtualHosts {
+			if svh.Secret != nil {
+				res = append(res, svh.Secret)
+			}
+			if svh.FallbackCertificate != nil {
+				res = append(res, svh.FallbackCertificate)
+			}
+		}
+	}
+
+	for _, c := range d.GetClusters() {
+		if c.ClientCertificate != nil {
+			res = append(res, c.ClientCertificate)
+		}
+	}
+
+	return res
 }
 
 // GetExtensionCluster returns the extension cluster in the DAG that
 // matches the provided name, or nil if no matching extension cluster
-//is found.
-func (dag *DAG) GetExtensionCluster(name string) *ExtensionCluster {
-	return dag.GetExtensionClusters()[name]
-}
-
-// extensionClusterGetter is a visitor that gets all extension clusters
-// in the DAG.
-type extensionClusterGetter map[string]*ExtensionCluster
-
-func (v extensionClusterGetter) visit(vertex Vertex) {
-	switch obj := vertex.(type) {
-	case *ExtensionCluster:
-		v[obj.Name] = obj
-	default:
-		vertex.Visit(v.visit)
-	}
-}
-
-// validSecret returns true if the Secret contains certificate and private key material.
-func validSecret(s *v1.Secret) error {
-	if s.Type != v1.SecretTypeTLS {
-		return fmt.Errorf("Secret type is not %q", v1.SecretTypeTLS)
-	}
-
-	if len(s.Data[v1.TLSCertKey]) == 0 {
-		return fmt.Errorf("empty %q key", v1.TLSCertKey)
-	}
-
-	if len(s.Data[v1.TLSPrivateKeyKey]) == 0 {
-		return fmt.Errorf("empty %q key", v1.TLSPrivateKeyKey)
+// is found.
+func (d *DAG) GetExtensionCluster(name string) *ExtensionCluster {
+	for _, ec := range d.ExtensionClusters {
+		if ec.Name == name {
+			return ec
+		}
 	}
 
 	return nil
+}
+
+func (d *DAG) GetVirtualHostRoutes() map[*VirtualHost][]*Route {
+	res := map[*VirtualHost][]*Route{}
+
+	for _, l := range d.Listeners {
+		for _, vhost := range l.VirtualHosts {
+			var routes []*Route
+			for _, r := range vhost.Routes {
+				routes = append(routes, r)
+			}
+			if len(routes) > 0 {
+				res[vhost] = routes
+			}
+		}
+	}
+
+	return res
+}
+
+func (d *DAG) GetSecureVirtualHostRoutes() map[*SecureVirtualHost][]*Route {
+	res := map[*SecureVirtualHost][]*Route{}
+
+	for _, l := range d.Listeners {
+		for _, vhost := range l.SecureVirtualHosts {
+			var routes []*Route
+			for _, r := range vhost.Routes {
+				routes = append(routes, r)
+			}
+			if len(routes) > 0 {
+				res[vhost] = routes
+			}
+		}
+	}
+
+	return res
 }

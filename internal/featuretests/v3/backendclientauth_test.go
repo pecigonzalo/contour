@@ -16,25 +16,24 @@ package v3
 import (
 	"testing"
 
-	envoy_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	envoy_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	projcontour "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
-	"github.com/projectcontour/contour/internal/contour"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"github.com/sirupsen/logrus"
+	core_v1 "k8s.io/api/core/v1"
+	networking_v1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 	"github.com/projectcontour/contour/internal/dag"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/featuretests"
 	"github.com/projectcontour/contour/internal/fixture"
-	"github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
-	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/pointer"
 )
 
-func proxyClientCertificateOpt(t *testing.T) func(eh *contour.EventHandler) {
-	return func(eh *contour.EventHandler) {
+func proxyClientCertificateOpt(t *testing.T) func(*dag.Builder) {
+	return func(b *dag.Builder) {
 		secret := types.NamespacedName{
 			Name:      "envoyclientsecret",
 			Namespace: "default",
@@ -43,7 +42,8 @@ func proxyClientCertificateOpt(t *testing.T) func(eh *contour.EventHandler) {
 		log := fixture.NewTestLogger(t)
 		log.SetLevel(logrus.DebugLevel)
 
-		eh.Builder.Processors = []dag.Processor{
+		b.Processors = []dag.Processor{
+			&dag.ListenerProcessor{},
 			&dag.IngressProcessor{
 				ClientCertificate: &secret,
 				FieldLogger:       log.WithField("context", "IngressProcessor"),
@@ -55,31 +55,14 @@ func proxyClientCertificateOpt(t *testing.T) func(eh *contour.EventHandler) {
 				ClientCertificate: &secret,
 				FieldLogger:       log.WithField("context", "ExtensionServiceProcessor"),
 			},
-			&dag.ListenerProcessor{},
+			&dag.GatewayAPIProcessor{
+				FieldLogger: log.WithField("context", "GatewayAPIProcessor"),
+			},
 		}
-	}
-}
 
-func clientSecret() *v1.Secret {
-	return &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "envoyclientsecret",
-			Namespace: "default",
-		},
-		Type: "kubernetes.io/tls",
-		Data: featuretests.Secretdata(featuretests.CERTIFICATE, featuretests.RSA_PRIVATE_KEY),
-	}
-}
-
-func caSecret() *v1.Secret {
-	return &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "backendcacert",
-			Namespace: "default",
-		},
-		Data: map[string][]byte{
-			dag.CACertificateKey: []byte(featuretests.CERTIFICATE),
-		},
+		b.Source.ConfiguredSecretRefs = []*types.NamespacedName{
+			{Namespace: secret.Namespace, Name: secret.Name},
+		}
 	}
 }
 
@@ -87,27 +70,29 @@ func TestBackendClientAuthenticationWithHTTPProxy(t *testing.T) {
 	rh, c, done := setup(t, proxyClientCertificateOpt(t))
 	defer done()
 
-	sec1 := clientSecret()
-	sec2 := caSecret()
-	rh.OnAdd(sec1)
-	rh.OnAdd(sec2)
+	clientSecret := featuretests.TLSSecret(t, "envoyclientsecret", &featuretests.ClientCertificate)
+	serverSecret := featuretests.TLSSecret(t, "envoyserversecret", &featuretests.ServerCertificate)
+	caSecret := featuretests.CASecret(t, "backendcacert", &featuretests.CACertificate)
+	rh.OnAdd(clientSecret)
+	rh.OnAdd(serverSecret)
+	rh.OnAdd(caSecret)
 
 	svc := fixture.NewService("backend").
-		WithPorts(v1.ServicePort{Name: "http", Port: 443})
+		WithPorts(core_v1.ServicePort{Name: "http", Port: 443})
 	rh.OnAdd(svc)
 
 	proxy := fixture.NewProxy("authenticated").WithSpec(
-		projcontour.HTTPProxySpec{
-			VirtualHost: &projcontour.VirtualHost{
+		contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "www.example.com",
 			},
-			Routes: []projcontour.Route{{
-				Services: []projcontour.Service{{
+			Routes: []contour_v1.Route{{
+				Services: []contour_v1.Service{{
 					Name:     svc.Name,
 					Port:     443,
-					Protocol: pointer.StringPtr("tls"),
-					UpstreamValidation: &projcontour.UpstreamValidation{
-						CACertificate: sec2.Name,
+					Protocol: ptr.To("tls"),
+					UpstreamValidation: &contour_v1.UpstreamValidation{
+						CACertificate: caSecret.Name,
 						SubjectName:   "subjname",
 					},
 				}},
@@ -115,34 +100,61 @@ func TestBackendClientAuthenticationWithHTTPProxy(t *testing.T) {
 		})
 	rh.OnAdd(proxy)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	expectedResponse := &envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			tlsCluster(cluster("default/backend/443/d411a4160f", "default/backend/http", "default_backend_443"), []byte(featuretests.CERTIFICATE), "subjname", "", sec1),
+			tlsCluster(cluster("default/backend/443/950c17581f", "default/backend/http", "default_backend_443"), caSecret, "subjname", "", clientSecret, nil),
 		),
 		TypeUrl: clusterType,
-	})
+	}
+
+	c.Request(clusterType).Equals(expectedResponse)
+
+	rh.OnDelete(proxy)
+
+	tcpproxy := fixture.NewProxy("tcpproxy").WithSpec(
+		contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
+				Fqdn: "www.example.com",
+				TLS: &contour_v1.TLS{
+					SecretName: serverSecret.Name,
+				},
+			},
+			TCPProxy: &contour_v1.TCPProxy{
+				Services: []contour_v1.Service{{
+					Name:     svc.Name,
+					Port:     443,
+					Protocol: ptr.To("tls"),
+					UpstreamValidation: &contour_v1.UpstreamValidation{
+						CACertificate: caSecret.Name,
+						SubjectName:   "subjname",
+					},
+				}},
+			},
+		})
+	rh.OnAdd(tcpproxy)
+
+	c.Request(clusterType).Equals(expectedResponse)
 
 	// Test the error branch when Envoy client certificate secret does not exist.
-	rh.OnDelete(sec1)
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	rh.OnDelete(clientSecret)
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: nil,
 		TypeUrl:   clusterType,
 	})
-
 }
 
 func TestBackendClientAuthenticationWithIngress(t *testing.T) {
 	rh, c, done := setup(t, proxyClientCertificateOpt(t))
 	defer done()
 
-	sec1 := clientSecret()
-	sec2 := caSecret()
-	rh.OnAdd(sec1)
-	rh.OnAdd(sec2)
+	clientSecret := featuretests.TLSSecret(t, "envoyclientsecret", &featuretests.ClientCertificate)
+	caSecret := featuretests.CASecret(t, "backendcacert", &featuretests.CACertificate)
+	rh.OnAdd(clientSecret)
+	rh.OnAdd(caSecret)
 
 	svc := fixture.NewService("backend").
 		Annotate("projectcontour.io/upstream-protocol.tls", "443").
-		WithPorts(v1.ServicePort{Name: "http", Port: 443})
+		WithPorts(core_v1.ServicePort{Name: "http", Port: 443})
 	rh.OnAdd(svc)
 
 	ingress := &networking_v1.Ingress{
@@ -153,42 +165,45 @@ func TestBackendClientAuthenticationWithIngress(t *testing.T) {
 	}
 	rh.OnAdd(ingress)
 
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: resources(t,
-			tlsClusterWithoutValidation(cluster("default/backend/443/da39a3ee5e", "default/backend/http", "default_backend_443"), "", sec1),
+			tlsClusterWithoutValidation(cluster("default/backend/443/4929fca9d4", "default/backend/http", "default_backend_443"), "", clientSecret, nil),
 		),
 		TypeUrl: clusterType,
 	})
 
 	// Test the error branch when Envoy client certificate secret does not exist.
-	rh.OnDelete(sec1)
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	rh.OnDelete(clientSecret)
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: nil,
 		TypeUrl:   clusterType,
 	})
 }
 
 func TestBackendClientAuthenticationWithExtensionService(t *testing.T) {
+	envoyGen := envoy_v3.NewEnvoyGen(envoy_v3.EnvoyGenOpt{
+		XDSClusterName: envoy_v3.DefaultXDSClusterName,
+	})
 	rh, c, done := setup(t, proxyClientCertificateOpt(t))
 	defer done()
 
-	sec1 := clientSecret()
-	sec2 := caSecret()
-	rh.OnAdd(sec1)
-	rh.OnAdd(sec2)
+	clientSecret := featuretests.TLSSecret(t, "envoyclientsecret", &featuretests.ClientCertificate)
+	caSecret := featuretests.CASecret(t, "backendcacert", &featuretests.CACertificate)
+	rh.OnAdd(clientSecret)
+	rh.OnAdd(caSecret)
 
 	svc := fixture.NewService("backend").
-		WithPorts(v1.ServicePort{Name: "grpc", Port: 6001})
+		WithPorts(core_v1.ServicePort{Name: "grpc", Port: 6001})
 	rh.OnAdd(svc)
 
-	ext := &v1alpha1.ExtensionService{
+	ext := &contour_v1alpha1.ExtensionService{
 		ObjectMeta: fixture.ObjectMeta("ext"),
-		Spec: v1alpha1.ExtensionServiceSpec{
-			Services: []v1alpha1.ExtensionServiceTarget{
+		Spec: contour_v1alpha1.ExtensionServiceSpec{
+			Services: []contour_v1alpha1.ExtensionServiceTarget{
 				{Name: svc.Name, Port: 6001},
 			},
-			UpstreamValidation: &projcontour.UpstreamValidation{
-				CACertificate: sec2.Name,
+			UpstreamValidation: &contour_v1.UpstreamValidation{
+				CACertificate: caSecret.Name,
 				SubjectName:   "subjname",
 			},
 		},
@@ -197,35 +212,30 @@ func TestBackendClientAuthenticationWithExtensionService(t *testing.T) {
 	rh.OnAdd(ext)
 
 	tlsSocket := envoy_v3.UpstreamTLSTransportSocket(
-		envoy_v3.UpstreamTLSContext(
+		envoyGen.UpstreamTLSContext(
 			&dag.PeerValidationContext{
-				CACertificate: &dag.Secret{Object: &v1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "secret",
-						Namespace: "default",
-					},
-					Type: "kubernetes.io/tls",
-					Data: map[string][]byte{dag.CACertificateKey: []byte(featuretests.CERTIFICATE)},
-				}},
-				SubjectName: "subjname"},
+				CACertificates: []*dag.Secret{{Object: featuretests.CASecret(t, "secret", &featuretests.CACertificate)}},
+				SubjectNames:   []string{"subjname"},
+			},
 			"subjname",
-			&dag.Secret{Object: sec1},
+			&dag.Secret{Object: clientSecret},
+			nil,
 			"h2",
 		),
 	)
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: clusterType,
 		Resources: resources(t,
 			DefaultCluster(
 				h2cCluster(cluster("extension/default/ext", "extension/default/ext", "extension_default_ext")),
-				&envoy_cluster_v3.Cluster{TransportSocket: tlsSocket},
+				&envoy_config_cluster_v3.Cluster{TransportSocket: tlsSocket},
 			),
 		),
 	})
 
 	// Test the error branch when Envoy client certificate secret does not exist.
-	rh.OnDelete(sec1)
-	c.Request(clusterType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	rh.OnDelete(clientSecret)
+	c.Request(clusterType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		Resources: nil,
 		TypeUrl:   clusterType,
 	})

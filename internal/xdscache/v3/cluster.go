@@ -17,10 +17,10 @@ import (
 	"sort"
 	"sync"
 
-	envoy_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/golang/protobuf/proto"
-	"github.com/projectcontour/contour/internal/contour"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/envoy"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
@@ -31,44 +31,33 @@ import (
 // ClusterCache manages the contents of the gRPC CDS cache.
 type ClusterCache struct {
 	mu     sync.Mutex
-	values map[string]*envoy_cluster_v3.Cluster
-	contour.Cond
+	values map[string]*envoy_config_cluster_v3.Cluster
+
+	envoyGen *envoy_v3.EnvoyGen
+}
+
+func NewClusterCache(envoyGen *envoy_v3.EnvoyGen) *ClusterCache {
+	return &ClusterCache{
+		values:   make(map[string]*envoy_config_cluster_v3.Cluster),
+		envoyGen: envoyGen,
+	}
 }
 
 // Update replaces the contents of the cache with the supplied map.
-func (c *ClusterCache) Update(v map[string]*envoy_cluster_v3.Cluster) {
+func (c *ClusterCache) Update(v map[string]*envoy_config_cluster_v3.Cluster) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.values = v
-	c.Cond.Notify()
 }
 
 // Contents returns a copy of the cache's contents.
 func (c *ClusterCache) Contents() []proto.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var values []*envoy_cluster_v3.Cluster
+	var values []*envoy_config_cluster_v3.Cluster
 	for _, v := range c.values {
 		values = append(values, v)
-	}
-	sort.Stable(sorter.For(values))
-	return protobuf.AsMessages(values)
-}
-
-func (c *ClusterCache) Query(names []string) []proto.Message {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var values []*envoy_cluster_v3.Cluster
-	for _, n := range names {
-		// if the cluster is not registered we cannot return
-		// a blank cluster because each cluster has a required
-		// discovery type; DNS, EDS, etc. We cannot determine the
-		// correct value for this property from the cluster's name
-		// provided by the query so we must not return a blank cluster.
-		if v, ok := c.values[n]; ok {
-			values = append(values, v)
-		}
 	}
 	sort.Stable(sorter.For(values))
 	return protobuf.AsMessages(values)
@@ -77,37 +66,27 @@ func (c *ClusterCache) Query(names []string) []proto.Message {
 func (*ClusterCache) TypeURL() string { return resource.ClusterType }
 
 func (c *ClusterCache) OnChange(root *dag.DAG) {
-	clusters := visitClusters(root)
-	c.Update(clusters)
-}
+	clusters := map[string]*envoy_config_cluster_v3.Cluster{}
 
-type clusterVisitor struct {
-	clusters map[string]*envoy_cluster_v3.Cluster
-}
-
-// visitCluster produces a map of *envoy_cluster_v3.Clusters.
-func visitClusters(root dag.Vertex) map[string]*envoy_cluster_v3.Cluster {
-	cv := clusterVisitor{
-		clusters: make(map[string]*envoy_cluster_v3.Cluster),
-	}
-	cv.visit(root)
-	return cv.clusters
-}
-
-func (v *clusterVisitor) visit(vertex dag.Vertex) {
-	switch cluster := vertex.(type) {
-	case *dag.Cluster:
+	for _, cluster := range root.GetClusters() {
 		name := envoy.Clustername(cluster)
-		if _, ok := v.clusters[name]; !ok {
-			v.clusters[name] = envoy_v3.Cluster(cluster)
-		}
-	case *dag.ExtensionCluster:
-		name := cluster.Name
-		if _, ok := v.clusters[name]; !ok {
-			v.clusters[name] = envoy_v3.ExtensionCluster(cluster)
+		if _, ok := clusters[name]; !ok {
+			clusters[name] = c.envoyGen.Cluster(cluster)
 		}
 	}
 
-	// recurse into children of v
-	vertex.Visit(v.visit)
+	for name, ec := range root.GetExtensionClusters() {
+		if _, ok := clusters[name]; !ok {
+			clusters[name] = c.envoyGen.ExtensionCluster(ec)
+		}
+	}
+
+	for _, cluster := range root.GetDNSNameClusters() {
+		name := envoy.DNSNameClusterName(cluster)
+		if _, ok := clusters[name]; !ok {
+			clusters[name] = c.envoyGen.DNSNameCluster(cluster)
+		}
+	}
+
+	c.Update(clusters)
 }

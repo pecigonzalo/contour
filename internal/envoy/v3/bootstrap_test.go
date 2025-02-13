@@ -17,13 +17,14 @@ import (
 	"path"
 	"testing"
 
-	envoy_bootstrap_v3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
+	envoy_config_bootstrap_v3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
 	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/projectcontour/contour/internal/envoy"
 	"github.com/projectcontour/contour/internal/protobuf"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestBootstrap(t *testing.T) {
@@ -37,7 +38,8 @@ func TestBootstrap(t *testing.T) {
 		"default configuration": {
 			config: envoy.BootstrapConfig{
 				Path:      "envoy.json",
-				Namespace: "testing-ns"},
+				Namespace: "testing-ns",
+			},
 			wantedBootstrapConfig: `{
   "static_resources": {
     "clusters": [
@@ -72,13 +74,15 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
@@ -133,7 +137,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -147,7 +152,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -155,14 +161,57 @@ func TestBootstrap(t *testing.T) {
  	  "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
    	 "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -206,13 +255,15 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
@@ -267,7 +318,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -281,7 +333,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -289,14 +342,57 @@ func TestBootstrap(t *testing.T) {
       "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "someaddr",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -340,23 +436,25 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
         "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
         },
         "upstream_connection_options": {
           "tcp_keepalive": {
@@ -401,7 +499,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -415,7 +514,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -423,14 +523,57 @@ func TestBootstrap(t *testing.T) {
       "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/var/log/admin.log",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/var/log/admin.log"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -475,23 +618,25 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
         "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
         },
         "upstream_connection_options": {
           "tcp_keepalive": {
@@ -536,7 +681,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -550,7 +696,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -558,14 +705,57 @@ func TestBootstrap(t *testing.T) {
 	  "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -610,148 +800,15 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
-            }
-          ]
-        },
-        "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
-        },
-        "upstream_connection_options": {
-          "tcp_keepalive": {
-            "keepalive_probes": 3,
-            "keepalive_time": 30,
-            "keepalive_interval": 5
-          }
-        }
-      },
-      {
-        "name": "envoy-admin",
-        "alt_stat_name": "testing-ns_envoy-admin_9001",
-        "type": "STATIC",
-        "connect_timeout": "0.250s",
-        "load_assignment": {
-          "cluster_name": "envoy-admin",
-          "endpoints": [
-            {
-              "lb_endpoints": [
-                {
-                  "endpoint": {
-                    "address": {
-                      "pipe": {
-                        "path": "/admin/admin.sock",
-                        "mode": "420"
-                      }
-                    }
-                  }
-                }
-              ]
-            }
-          ]
-        }
-      }
-    ]
-  },
-  "dynamic_resources": {
-    "lds_config": {
-      "api_config_source": {
-        "api_type": "GRPC",
-        "transport_api_version": "V3",
-        "grpc_services": [
-          {
-            "envoy_grpc": {
-              "cluster_name": "contour"
-            }
-          }
-        ]
-      },
-	  "resource_api_version": "V3"
-    },
-    "cds_config": {
-      "api_config_source": {
-        "api_type": "GRPC",
-        "transport_api_version": "V3",
-        "grpc_services": [
-          {
-            "envoy_grpc": {
-              "cluster_name": "contour"
-            }
-          }
-        ]
-      },
-	  "resource_api_version": "V3"
-    }
-  },
-  "admin": {
-    "access_log_path": "/dev/null",
-    "address": {
-      "pipe": {
-        "path": "/admin/admin.sock",
-        "mode": "420"
-      }
-    }
-  }
-}`,
-		},
-		"--xds-address=::1 --xds-port=9200": {
-			config: envoy.BootstrapConfig{
-				Path:        "envoy.json",
-				XDSAddress:  "::1",
-				XDSGRPCPort: 9200,
-				Namespace:   "testing-ns",
-			},
-			wantedBootstrapConfig: `{
-  "static_resources": {
-    "clusters": [
-      {
-        "name": "contour",
-        "alt_stat_name": "testing-ns_contour_9200",
-        "type": "STATIC",
-        "connect_timeout": "5s",
-        "load_assignment": {
-          "cluster_name": "contour",
-          "endpoints": [
-            {
-              "lb_endpoints": [
-                {
-                  "endpoint": {
-                    "address": {
-                      "socket_address": {
-                        "address": "::1",
-                        "port_value": 9200
-                      }
-                    }
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "circuit_breakers": {
-          "thresholds": [
-            {
-              "priority": "HIGH",
-              "max_connections": 100000,
-              "max_pending_requests": 100000,
-              "max_requests": 60000000,
-              "max_retries": 50
-            },
-            {
-              "max_connections": 100000,
-              "max_pending_requests": 100000,
-              "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
@@ -806,7 +863,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -820,7 +878,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -828,14 +887,239 @@ func TestBootstrap(t *testing.T) {
 	  "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
+  }
+}`,
+		},
+		"--xds-address=::1 --xds-port=9200": {
+			config: envoy.BootstrapConfig{
+				Path:        "envoy.json",
+				XDSAddress:  "::1",
+				XDSGRPCPort: 9200,
+				Namespace:   "testing-ns",
+			},
+			wantedBootstrapConfig: `{
+  "static_resources": {
+    "clusters": [
+      {
+        "name": "contour",
+        "alt_stat_name": "testing-ns_contour_9200",
+        "type": "STATIC",
+        "connect_timeout": "5s",
+        "load_assignment": {
+          "cluster_name": "contour",
+          "endpoints": [
+            {
+              "lb_endpoints": [
+                {
+                  "endpoint": {
+                    "address": {
+                      "socket_address": {
+                        "address": "::1",
+                        "port_value": 9200
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "circuit_breakers": {
+          "thresholds": [
+            {
+              "priority": "HIGH",
+              "max_connections": 100000,
+              "max_pending_requests": 100000,
+              "max_requests": 60000000,
+              "max_retries": 50,
+              "track_remaining": true
+            },
+            {
+              "max_connections": 100000,
+              "max_pending_requests": 100000,
+              "max_requests": 60000000,
+              "max_retries": 50,
+              "track_remaining": true
+            }
+          ]
+        },
+        "typed_extension_protocol_options": {
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
+        },
+        "upstream_connection_options": {
+          "tcp_keepalive": {
+            "keepalive_probes": 3,
+            "keepalive_time": 30,
+            "keepalive_interval": 5
+          }
+        }
+      },
+      {
+        "name": "envoy-admin",
+        "alt_stat_name": "testing-ns_envoy-admin_9001",
+        "type": "STATIC",
+        "connect_timeout": "0.250s",
+        "load_assignment": {
+          "cluster_name": "envoy-admin",
+          "endpoints": [
+            {
+              "lb_endpoints": [
+                {
+                  "endpoint": {
+                    "address": {
+                      "pipe": {
+                        "path": "/admin/admin.sock",
+                        "mode": "420"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "dynamic_resources": {
+    "lds_config": {
+      "api_config_source": {
+        "api_type": "GRPC",
+        "transport_api_version": "V3",
+        "grpc_services": [
+          {
+            "envoy_grpc": {
+              "cluster_name": "contour",
+              "authority": "contour"
+            }
+          }
+        ]
+      },
+	  "resource_api_version": "V3"
+    },
+    "cds_config": {
+      "api_config_source": {
+        "api_type": "GRPC",
+        "transport_api_version": "V3",
+        "grpc_services": [
+          {
+            "envoy_grpc": {
+              "cluster_name": "contour",
+              "authority": "contour"
+            }
+          }
+        ]
+      },
+	  "resource_api_version": "V3"
+    }
+  },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
+  "admin": {
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
+    "address": {
+      "pipe": {
+        "path": "/admin/admin.sock",
+        "mode": "420"
+      }
+    }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -881,23 +1165,25 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
         "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
         },
         "dns_lookup_family": "V6_ONLY",
         "upstream_connection_options": {
@@ -943,7 +1229,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -957,7 +1244,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -965,14 +1253,57 @@ func TestBootstrap(t *testing.T) {
 	  "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -1019,23 +1350,25 @@ func TestBootstrap(t *testing.T) {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             },
             {
               "max_connections": 100000,
               "max_pending_requests": 100000,
               "max_requests": 60000000,
-              "max_retries": 50
+              "max_retries": 50,
+              "track_remaining": true
             }
           ]
         },
         "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
         },
         "upstream_connection_options": {
           "tcp_keepalive": {
@@ -1049,6 +1382,9 @@ func TestBootstrap(t *testing.T) {
           "typed_config": {
             "@type":"type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
             "common_tls_context": {
+              "tls_params": {
+                "tls_maximum_protocol_version": "TLSv1_3"
+              },
               "tls_certificates": [
                 {
                   "certificate_chain": {
@@ -1063,10 +1399,13 @@ func TestBootstrap(t *testing.T) {
                 "trusted_ca": {
                   "filename": "CA.cert"
                 },
-		"match_subject_alt_names": [
-		  {
-		    "exact": "contour"
-		  }
+                "match_typed_subject_alt_names": [
+                  {
+                    "san_type": "DNS",
+                    "matcher": {
+                      "exact": "contour"
+                    }
+                  }
                 ]
               }
             }
@@ -1108,7 +1447,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -1122,7 +1462,8 @@ func TestBootstrap(t *testing.T) {
         "grpc_services": [
           {
             "envoy_grpc": {
-              "cluster_name": "contour"
+              "cluster_name": "contour",
+              "authority": "contour"
             }
           }
         ]
@@ -1130,14 +1471,57 @@ func TestBootstrap(t *testing.T) {
 	  "resource_api_version": "V3"
     }
   },
+  "default_regex_engine": {
+    "name": "envoy.regex_engines.google_re2",
+    "typed_config": {
+      "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+    }
+  },
   "admin": {
-    "access_log_path": "/dev/null",
+    "access_log": [
+      {
+        "name": "envoy.access_loggers.file",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+          "path": "/dev/null"
+        }
+      }
+    ],
     "address": {
       "pipe": {
         "path": "/admin/admin.sock",
         "mode": "420"
       }
     }
+  },
+  "layered_runtime": {
+    "layers": [
+      {
+        "name": "dynamic",
+        "rtds_layer": {
+          "name": "dynamic",
+          "rtds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        }
+      },
+      {
+        "name": "admin",
+        "admin_layer": {}
+      }
+    ]
   }
 }`,
 		},
@@ -1185,35 +1569,42 @@ func TestBootstrap(t *testing.T) {
                     "max_connections": 100000,
                     "max_pending_requests": 100000,
                     "max_requests": 60000000,
-                    "max_retries": 50
+                    "max_retries": 50,
+                    "track_remaining": true
                   },
                   {
                     "max_connections": 100000,
                     "max_pending_requests": 100000,
                     "max_requests": 60000000,
-                    "max_retries": 50
+                    "max_retries": 50,
+                    "track_remaining": true
                   }
                 ]
               },
               "typed_extension_protocol_options": {
-          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {	
-            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",	
-            "explicit_http_config": {	
-              "http2_protocol_options": {}	
-            }	
-          }	
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
         },
               "transport_socket": {
                 "name": "envoy.transport_sockets.tls",
                 "typed_config": {
                   "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
                   "common_tls_context": {
+                    "tls_params": {
+                      "tls_maximum_protocol_version": "TLSv1_3"
+                    },
                     "tls_certificate_sds_secret_configs": [
                       {
                         "name": "contour_xds_tls_certificate",
                         "sds_config": {
                           "resource_api_version": "V3",
-                          "path": "resources/sds/xds-tls-certificate.json"
+                          "path_config_source": {
+                            "path": "resources/sds/xds-tls-certificate.json"
+                          }
                         }
                       }
                     ],
@@ -1221,7 +1612,9 @@ func TestBootstrap(t *testing.T) {
                       "name": "contour_xds_tls_validation_context",
                       "sds_config": {
                         "resource_api_version": "V3",
-                        "path": "resources/sds/xds-validation-context.json"
+                        "path_config_source": {
+                          "path": "resources/sds/xds-validation-context.json"
+                        }
                       }
                     }
                   }
@@ -1270,7 +1663,8 @@ func TestBootstrap(t *testing.T) {
               "grpc_services": [
                 {
                   "envoy_grpc": {
-                    "cluster_name": "contour"
+                    "cluster_name": "contour",
+                    "authority": "contour"
                   }
                 }
               ]
@@ -1284,7 +1678,8 @@ func TestBootstrap(t *testing.T) {
               "grpc_services": [
                 {
                   "envoy_grpc": {
-                    "cluster_name": "contour"
+                    "cluster_name": "contour",
+                    "authority": "contour"
                   }
                 }
               ]
@@ -1292,14 +1687,57 @@ func TestBootstrap(t *testing.T) {
             "resource_api_version": "V3"
           }
         },
-        "admin": {
-          "access_log_path": "/dev/null",
-          "address": {
-           "pipe": {
-		    "path": "/admin/admin.sock",
-			   "mode": "420"
-			}
+        "default_regex_engine": {
+          "name": "envoy.regex_engines.google_re2",
+          "typed_config": {
+            "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
           }
+        },
+        "admin": {
+          "access_log": [
+            {
+              "name": "envoy.access_loggers.file",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+                "path": "/dev/null"
+              }
+            }
+          ],
+          "address": {
+            "pipe": {
+              "path": "/admin/admin.sock",
+              "mode": "420"
+            }
+          }
+        },
+        "layered_runtime": {
+          "layers": [
+            {
+              "name": "dynamic",
+              "rtds_layer": {
+                "name": "dynamic",
+                "rtds_config": {
+                  "api_config_source": {
+                    "api_type": "GRPC",
+                    "transport_api_version": "V3",
+                    "grpc_services": [
+                      {
+                        "envoy_grpc": {
+                          "cluster_name": "contour",
+                          "authority": "contour"
+                        }
+                      }
+                    ]
+                  },
+                  "resource_api_version": "V3"
+                }
+              }
+            },
+            {
+              "name": "admin",
+              "admin_layer": {}
+            }
+          ]
         }
     }`,
 			wantedTLSCertificateConfig: `{
@@ -1327,9 +1765,12 @@ func TestBootstrap(t *testing.T) {
             "trusted_ca": {
               "filename": "CA.cert"
             },
-            "match_subject_alt_names": [
+            "match_typed_subject_alt_names": [
               {
-                "exact": "contour"
+                "san_type": "DNS",
+                "matcher": {
+                  "exact": "contour"
+                }
               }
             ]
           }
@@ -1346,12 +1787,234 @@ func TestBootstrap(t *testing.T) {
 				GrpcClientKey:  "client.key",
 			},
 			wantedError: true,
-		}}
+		},
+		"Enable overload manager by specifying --overload-max-heap=2147483648": {
+			config: envoy.BootstrapConfig{
+				Path:                 "envoy.json",
+				Namespace:            "projectcontour",
+				MaximumHeapSizeBytes: 2147483648, // 2 GiB
+			},
+			wantedBootstrapConfig: `{
+        "static_resources": {
+          "clusters": [
+            {
+              "name": "contour",
+              "alt_stat_name": "projectcontour_contour_8001",
+              "type": "STATIC",
+              "connect_timeout": "5s",
+              "load_assignment": {
+                "cluster_name": "contour",
+                "endpoints": [
+                  {
+                    "lb_endpoints": [
+                      {
+                        "endpoint": {
+                          "address": {
+                            "socket_address": {
+                              "address": "127.0.0.1",
+                              "port_value": 8001
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "circuit_breakers": {
+                "thresholds": [
+                  {
+                    "priority": "HIGH",
+                    "max_connections": 100000,
+                    "max_pending_requests": 100000,
+                    "max_requests": 60000000,
+                    "max_retries": 50,
+                    "track_remaining": true
+                  },
+                  {
+                    "max_connections": 100000,
+                    "max_pending_requests": 100000,
+                    "max_requests": 60000000,
+                    "max_retries": 50,
+                    "track_remaining": true
+                  }
+                ]
+              },
+              "typed_extension_protocol_options": {
+                "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+                  "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+                  "explicit_http_config": {
+                    "http2_protocol_options": {}
+                  }
+                }
+              },
+              "upstream_connection_options": {
+                "tcp_keepalive": {
+                  "keepalive_probes": 3,
+                  "keepalive_time": 30,
+                  "keepalive_interval": 5
+                }
+              }
+            },
+            {
+              "name": "envoy-admin",
+              "alt_stat_name": "projectcontour_envoy-admin_9001",
+              "type": "STATIC",
+              "connect_timeout": "0.250s",
+              "load_assignment": {
+                "cluster_name": "envoy-admin",
+                "endpoints": [
+                  {
+                    "lb_endpoints": [
+                      {
+                        "endpoint": {
+                          "address": {
+                            "pipe": {
+                              "path": "/admin/admin.sock",
+                              "mode": 420
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "default_regex_engine": {
+          "name": "envoy.regex_engines.google_re2",
+          "typed_config": {
+            "@type": "type.googleapis.com/envoy.extensions.regex_engines.v3.GoogleRE2"
+          }
+        },
+        "dynamic_resources": {
+          "lds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          },
+          "cds_config": {
+            "api_config_source": {
+              "api_type": "GRPC",
+              "transport_api_version": "V3",
+              "grpc_services": [
+                {
+                  "envoy_grpc": {
+                    "cluster_name": "contour",
+                    "authority": "contour"
+                  }
+                }
+              ]
+            },
+            "resource_api_version": "V3"
+          }
+        },
+        "layered_runtime": {
+          "layers": [
+            {
+              "name": "dynamic",
+              "rtds_layer": {
+                "name": "dynamic",
+                "rtds_config": {
+                  "api_config_source": {
+                    "api_type": "GRPC",
+                    "transport_api_version": "V3",
+                    "grpc_services": [
+                      {
+                        "envoy_grpc": {
+                          "cluster_name": "contour",
+                          "authority": "contour"
+                        }
+                      }
+                    ]
+                  },
+                  "resource_api_version": "V3"
+                }
+              }
+            },
+            {
+              "name": "admin",
+              "admin_layer": {}
+            }
+          ]
+        },
+        "admin": {
+          "access_log": [
+            {
+              "name": "envoy.access_loggers.file",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+                "path": "/dev/null"
+              }
+            }
+          ],
+          "address": {
+            "pipe": {
+              "path": "/admin/admin.sock",
+              "mode": 420
+            }
+          }
+        },
+        "overload_manager": {
+          "refresh_interval": "0.250s",
+          "resource_monitors": [
+            {
+              "name": "envoy.resource_monitors.fixed_heap",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.resource_monitors.fixed_heap.v3.FixedHeapConfig",
+                "max_heap_size_bytes": "2147483648"
+              }
+            }
+          ],
+          "actions": [
+            {
+              "name": "envoy.overload_actions.shrink_heap",
+              "triggers": [
+                {
+                  "name": "envoy.resource_monitors.fixed_heap",
+                  "threshold": {
+                    "value": 0.95
+                  }
+                }
+              ]
+            },
+            {
+              "name": "envoy.overload_actions.stop_accepting_requests",
+              "triggers": [
+                {
+                  "name": "envoy.resource_monitors.fixed_heap",
+                  "threshold": {
+                    "value": 0.98
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }`,
+		},
+	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			steps, gotError := bootstrap(&tc.config)
-			assert.Equal(t, gotError != nil, tc.wantedError)
+			tc := tc
+			envoyGen := NewEnvoyGen(EnvoyGenOpt{
+				XDSClusterName: DefaultXDSClusterName,
+			})
+			steps, gotError := envoyGen.bootstrap(&tc.config)
+			assert.Equal(t, tc.wantedError, gotError != nil)
 
 			gotConfigs := map[string]proto.Message{}
 			for _, step := range steps {
@@ -1363,7 +2026,7 @@ func TestBootstrap(t *testing.T) {
 			sdsValidationContextPath := path.Join(tc.config.ResourcesDir, envoy.SDSResourcesSubdirectory, envoy.SDSValidationContextFile)
 
 			if tc.wantedBootstrapConfig != "" {
-				want := new(envoy_bootstrap_v3.Bootstrap)
+				want := new(envoy_config_bootstrap_v3.Bootstrap)
 				unmarshal(t, tc.wantedBootstrapConfig, want)
 				protobuf.ExpectEqual(t, want, gotConfigs[tc.config.Path])
 				delete(gotConfigs, tc.config.Path)
@@ -1391,7 +2054,7 @@ func TestBootstrap(t *testing.T) {
 }
 
 func unmarshal(t *testing.T, data string, pb proto.Message) {
-	err := jsonpb.UnmarshalString(data, pb)
+	err := protojson.Unmarshal([]byte(data), pb)
 	checkErr(t, err)
 }
 

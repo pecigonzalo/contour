@@ -14,13 +14,16 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var ExtensionServiceGVR = GroupVersion.WithResource("extensionservices")
-var ContourConfigurationGVR = GroupVersion.WithResource("contourconfigurations")
+var (
+	ExtensionServiceGVR     = GroupVersion.WithResource("extensionservices")
+	ContourConfigurationGVR = GroupVersion.WithResource("contourconfigurations")
+	ContourDeploymentGVR    = GroupVersion.WithResource("contourdeployments")
+)
 
 var (
 	// GroupVersion is group version used to register these objects
@@ -40,8 +43,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ExtensionServiceList{},
 		&ContourConfiguration{},
 		&ContourConfigurationList{},
+		&ContourDeployment{},
+		&ContourDeploymentList{},
 	)
 
-	metav1.AddToGroupVersion(scheme, GroupVersion)
+	meta_v1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }

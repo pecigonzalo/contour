@@ -14,16 +14,21 @@
 package dag
 
 import (
-	"io/ioutil"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/internal/timeout"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+	"github.com/projectcontour/contour/internal/timeout"
 )
 
 func TestRetryPolicyIngress(t *testing.T) {
@@ -31,28 +36,29 @@ func TestRetryPolicyIngress(t *testing.T) {
 		i    *networking_v1.Ingress
 		want *RetryPolicy
 	}{
-		"no anotations": {
+		"no annotations": {
 			i:    &networking_v1.Ingress{},
 			want: nil,
 		},
 		"retry-on": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/retry-on": "5xx",
 					},
 				},
 			},
 			want: &RetryPolicy{
-				RetryOn: "5xx",
+				RetryOn:    "5xx",
+				NumRetries: 1,
 			},
 		},
-		"explicitly zero retries": {
+		"explicitly disabled retries": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/retry-on":    "5xx",
-						"projectcontour.io/num-retries": "0",
+						"projectcontour.io/num-retries": "-1",
 					},
 				},
 			},
@@ -63,7 +69,7 @@ func TestRetryPolicyIngress(t *testing.T) {
 		},
 		"num-retries": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/retry-on":    "5xx",
 						"projectcontour.io/num-retries": "7",
@@ -77,7 +83,7 @@ func TestRetryPolicyIngress(t *testing.T) {
 		},
 		"no retry count, per try timeout": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/retry-on":        "5xx",
 						"projectcontour.io/per-try-timeout": "10s",
@@ -86,13 +92,13 @@ func TestRetryPolicyIngress(t *testing.T) {
 			},
 			want: &RetryPolicy{
 				RetryOn:       "5xx",
-				NumRetries:    0,
+				NumRetries:    1,
 				PerTryTimeout: timeout.DurationSetting(10 * time.Second),
 			},
 		},
 		"explicit 0s timeout": {
 			i: &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
+				ObjectMeta: meta_v1.ObjectMeta{
 					Annotations: map[string]string{
 						"projectcontour.io/retry-on":        "5xx",
 						"projectcontour.io/per-try-timeout": "0s",
@@ -101,7 +107,7 @@ func TestRetryPolicyIngress(t *testing.T) {
 			},
 			want: &RetryPolicy{
 				RetryOn:       "5xx",
-				NumRetries:    0,
+				NumRetries:    1,
 				PerTryTimeout: timeout.DefaultSetting(),
 			},
 		},
@@ -109,7 +115,7 @@ func TestRetryPolicyIngress(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := ingressRetryPolicy(tc.i, &logrus.Logger{Out: ioutil.Discard})
+			got := ingressRetryPolicy(tc.i, &logrus.Logger{Out: io.Discard})
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -117,7 +123,7 @@ func TestRetryPolicyIngress(t *testing.T) {
 
 func TestRetryPolicy(t *testing.T) {
 	tests := map[string]struct {
-		rp   *contour_api_v1.RetryPolicy
+		rp   *contour_v1.RetryPolicy
 		want *RetryPolicy
 	}{
 		"nil retry policy": {
@@ -125,14 +131,14 @@ func TestRetryPolicy(t *testing.T) {
 			want: nil,
 		},
 		"empty policy": {
-			rp: &contour_api_v1.RetryPolicy{},
+			rp: &contour_v1.RetryPolicy{},
 			want: &RetryPolicy{
 				RetryOn:    "5xx",
 				NumRetries: 1,
 			},
 		},
 		"explicitly zero retries": {
-			rp: &contour_api_v1.RetryPolicy{
+			rp: &contour_v1.RetryPolicy{
 				NumRetries: 0, // zero value for NumRetries
 			},
 			want: &RetryPolicy{
@@ -141,7 +147,7 @@ func TestRetryPolicy(t *testing.T) {
 			},
 		},
 		"no retry count, per try timeout": {
-			rp: &contour_api_v1.RetryPolicy{
+			rp: &contour_v1.RetryPolicy{
 				PerTryTimeout: "10s",
 			},
 			want: &RetryPolicy{
@@ -151,7 +157,7 @@ func TestRetryPolicy(t *testing.T) {
 			},
 		},
 		"explicit 0s timeout": {
-			rp: &contour_api_v1.RetryPolicy{
+			rp: &contour_v1.RetryPolicy{
 				PerTryTimeout: "0s",
 			},
 			want: &RetryPolicy{
@@ -161,8 +167,8 @@ func TestRetryPolicy(t *testing.T) {
 			},
 		},
 		"retry on": {
-			rp: &contour_api_v1.RetryPolicy{
-				RetryOn: []contour_api_v1.RetryOn{"gateway-error", "connect-failure"},
+			rp: &contour_v1.RetryPolicy{
+				RetryOn: []contour_v1.RetryOn{"gateway-error", "connect-failure"},
 			},
 			want: &RetryPolicy{
 				RetryOn:    "gateway-error,connect-failure",
@@ -170,7 +176,7 @@ func TestRetryPolicy(t *testing.T) {
 			},
 		},
 		"retriable status codes": {
-			rp: &contour_api_v1.RetryPolicy{
+			rp: &contour_v1.RetryPolicy{
 				RetriableStatusCodes: []uint32{502, 503, 504},
 			},
 			want: &RetryPolicy{
@@ -191,67 +197,99 @@ func TestRetryPolicy(t *testing.T) {
 
 func TestTimeoutPolicy(t *testing.T) {
 	tests := map[string]struct {
-		tp      *contour_api_v1.TimeoutPolicy
-		want    TimeoutPolicy
-		wantErr bool
+		tp                       *contour_v1.TimeoutPolicy
+		clusterConnectTimeout    time.Duration
+		wantRouteTimeoutPolicy   RouteTimeoutPolicy
+		wantClusterTimeoutPolicy ClusterTimeoutPolicy
+		wantErr                  bool
 	}{
 		"nil timeout policy": {
-			tp:   nil,
-			want: TimeoutPolicy{},
+			tp:                     nil,
+			wantRouteTimeoutPolicy: RouteTimeoutPolicy{},
 		},
 		"empty timeout policy": {
-			tp:   &contour_api_v1.TimeoutPolicy{},
-			want: TimeoutPolicy{},
+			tp:                     &contour_v1.TimeoutPolicy{},
+			wantRouteTimeoutPolicy: RouteTimeoutPolicy{},
 		},
 		"valid response timeout": {
-			tp: &contour_api_v1.TimeoutPolicy{
+			tp: &contour_v1.TimeoutPolicy{
 				Response: "1m30s",
 			},
-			want: TimeoutPolicy{
+			wantRouteTimeoutPolicy: RouteTimeoutPolicy{
 				ResponseTimeout: timeout.DurationSetting(90 * time.Second),
 			},
 		},
 		"invalid response timeout": {
-			tp: &contour_api_v1.TimeoutPolicy{
+			tp: &contour_v1.TimeoutPolicy{
 				Response: "90", // 90 what?
 			},
 			wantErr: true,
 		},
 		"infinite response timeout": {
-			tp: &contour_api_v1.TimeoutPolicy{
+			tp: &contour_v1.TimeoutPolicy{
 				Response: "infinite",
 			},
-			want: TimeoutPolicy{
+			wantRouteTimeoutPolicy: RouteTimeoutPolicy{
 				ResponseTimeout: timeout.DisabledSetting(),
 			},
 		},
-		"idle timeout": {
-			tp: &contour_api_v1.TimeoutPolicy{
+		"idle stream timeout": {
+			tp: &contour_v1.TimeoutPolicy{
 				Idle: "900s",
 			},
-			want: TimeoutPolicy{
-				IdleTimeout: timeout.DurationSetting(900 * time.Second),
+			wantRouteTimeoutPolicy: RouteTimeoutPolicy{
+				IdleStreamTimeout: timeout.DurationSetting(900 * time.Second),
+			},
+		},
+		"idle connection timeout": {
+			tp: &contour_v1.TimeoutPolicy{
+				IdleConnection: "900s",
+			},
+			wantClusterTimeoutPolicy: ClusterTimeoutPolicy{
+				IdleConnectionTimeout: timeout.DurationSetting(900 * time.Second),
+				ConnectTimeout:        0,
+			},
+		},
+		"infinite idle connection timeout": {
+			tp: &contour_v1.TimeoutPolicy{
+				IdleConnection: "infinite",
+			},
+			wantClusterTimeoutPolicy: ClusterTimeoutPolicy{
+				IdleConnectionTimeout: timeout.DisabledSetting(),
+				ConnectTimeout:        0,
+			},
+		},
+		"invalid idle connection timeout": {
+			tp: &contour_v1.TimeoutPolicy{
+				IdleConnection: "invalid value",
+			},
+			wantErr: true,
+		},
+		"no timeout policy for route but global connection timeout configured for clusters": {
+			clusterConnectTimeout: 5 * time.Second,
+			wantClusterTimeoutPolicy: ClusterTimeoutPolicy{
+				ConnectTimeout: 5 * time.Second,
 			},
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, gotErr := timeoutPolicy(tc.tp)
+			gotRouteTimeoutPolicy, gotClusterTimeoutPolicy, gotErr := timeoutPolicy(tc.tp, tc.clusterConnectTimeout)
 			if tc.wantErr {
-				assert.Error(t, gotErr)
+				require.Error(t, gotErr)
 			} else {
-				assert.Equal(t, tc.want, got)
-				assert.NoError(t, gotErr)
+				assert.Equal(t, tc.wantRouteTimeoutPolicy, gotRouteTimeoutPolicy)
+				assert.Equal(t, tc.wantClusterTimeoutPolicy, gotClusterTimeoutPolicy)
+				require.NoError(t, gotErr)
 			}
-
 		})
 	}
 }
 
 func TestLoadBalancerPolicy(t *testing.T) {
 	tests := map[string]struct {
-		lbp  *contour_api_v1.LoadBalancerPolicy
+		lbp  *contour_v1.LoadBalancerPolicy
 		want string
 	}{
 		"nil": {
@@ -259,35 +297,35 @@ func TestLoadBalancerPolicy(t *testing.T) {
 			want: "",
 		},
 		"empty": {
-			lbp:  &contour_api_v1.LoadBalancerPolicy{},
+			lbp:  &contour_v1.LoadBalancerPolicy{},
 			want: "",
 		},
 		"WeightedLeastRequest": {
-			lbp: &contour_api_v1.LoadBalancerPolicy{
+			lbp: &contour_v1.LoadBalancerPolicy{
 				Strategy: "WeightedLeastRequest",
 			},
 			want: "WeightedLeastRequest",
 		},
 		"Random": {
-			lbp: &contour_api_v1.LoadBalancerPolicy{
+			lbp: &contour_v1.LoadBalancerPolicy{
 				Strategy: "Random",
 			},
 			want: "Random",
 		},
 		"Cookie": {
-			lbp: &contour_api_v1.LoadBalancerPolicy{
+			lbp: &contour_v1.LoadBalancerPolicy{
 				Strategy: "Cookie",
 			},
 			want: "Cookie",
 		},
 		"RequestHash": {
-			lbp: &contour_api_v1.LoadBalancerPolicy{
+			lbp: &contour_v1.LoadBalancerPolicy{
 				Strategy: "RequestHash",
 			},
 			want: "RequestHash",
 		},
 		"unknown": {
-			lbp: &contour_api_v1.LoadBalancerPolicy{
+			lbp: &contour_v1.LoadBalancerPolicy{
 				Strategy: "please",
 			},
 			want: "",
@@ -304,14 +342,14 @@ func TestLoadBalancerPolicy(t *testing.T) {
 
 func TestHeadersPolicy(t *testing.T) {
 	tests := map[string]struct {
-		hp      *contour_api_v1.HeadersPolicy
+		hp      *contour_v1.HeadersPolicy
 		dhp     HeadersPolicy
 		want    HeadersPolicy
 		wantErr bool
 	}{
 		"no percentage unchanged": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-App-Weight",
 					Value: "100",
 				}},
@@ -324,8 +362,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"simple percentage escape": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-App-Weight",
 					Value: "100%",
 				}},
@@ -338,8 +376,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"known good Envoy dynamic header unescaped": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Envoy-Hostname",
 					Value: "%HOSTNAME%",
 				}},
@@ -352,8 +390,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"unknown Envoy dynamic header is escaped": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Envoy-Unknown",
 					Value: "%UNKNOWN%",
 				}},
@@ -366,8 +404,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"valid Envoy REQ header unescaped": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Request-Host",
 					Value: "%REQ(Host)%",
 				}},
@@ -379,9 +417,93 @@ func TestHeadersPolicy(t *testing.T) {
 				},
 			},
 		},
+		"valid Envoy REQ header unescaped truncated": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Host",
+					Value: "%REQ(Host):9%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Host": "%REQ(Host):9%",
+				},
+			},
+		},
+		"valid Envoy REQ http/2 pseudo-header unescaped": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Path",
+					Value: "%REQ(:PATH)%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Path": "%REQ(:PATH)%",
+				},
+			},
+		},
+		"valid Envoy REQ header if not present": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Foo-Fallback",
+					Value: "%REQ(X-Foo?X-Bar)%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Foo-Fallback": "%REQ(X-Foo?X-Bar)%",
+				},
+			},
+		},
+		"valid Envoy REQ header if not present truncated": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Foo-Fallback",
+					Value: "%REQ(X-Foo?X-Bar):10%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Foo-Fallback": "%REQ(X-Foo?X-Bar):10%",
+				},
+			},
+		},
+		"Envoy REQ header if not present invalid truncation": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Foo-Fallback",
+					Value: "%REQ(X-Foo?X-Bar):baz%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Foo-Fallback": "%%REQ(X-Foo?X-Bar):baz%%",
+				},
+			},
+		},
+		"valid Envoy REQ header if not present http/2 pseudo-header": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "X-Request-Path-Fallback",
+					Value: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
+				}},
+			},
+			dhp: HeadersPolicy{},
+			want: HeadersPolicy{
+				Set: map[string]string{
+					"X-Request-Path-Fallback": "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
+				},
+			},
+		},
 		"invalid Envoy REQ header is escaped": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Request-Host",
 					Value: "%REQ(inv@lid-header)%",
 				}},
@@ -394,8 +516,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"header value with dynamic and non-dynamic content and multiple dynamic fields": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Host-Protocol",
 					Value: "%HOSTNAME% - %PROTOCOL%",
 				}},
@@ -408,8 +530,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"dynamic service headers": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "l5d-dst-override",
 					Value: "%CONTOUR_SERVICE_NAME%.%CONTOUR_NAMESPACE%.svc.cluster.local:%CONTOUR_SERVICE_PORT%",
 				}},
@@ -421,8 +543,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"default header value with different object header value combined": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-Host-Protocol",
 					Value: "%HOSTNAME% - %PROTOCOL%",
 				}},
@@ -440,8 +562,8 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"default header value with same object header value not replaced": {
-			hp: &contour_api_v1.HeadersPolicy{
-				Set: []contour_api_v1.HeaderValue{{
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
 					Name:  "X-App-Weight",
 					Value: "100",
 				}},
@@ -458,7 +580,7 @@ func TestHeadersPolicy(t *testing.T) {
 			},
 		},
 		"same header removed in default and object": {
-			hp: &contour_api_v1.HeadersPolicy{
+			hp: &contour_v1.HeadersPolicy{
 				Remove: []string{"X-Sensitive-Header"},
 			},
 			dhp: HeadersPolicy{
@@ -479,6 +601,42 @@ func TestHeadersPolicy(t *testing.T) {
 				Remove: []string{"X-Sensitive-Header"},
 			},
 		},
+		"Host header rewrite by user header policy": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "Host",
+					Value: "foo",
+				}},
+			},
+			dhp: HeadersPolicy{
+				Set: map[string]string{
+					"Host": "bar",
+				},
+			},
+			want: HeadersPolicy{
+				HostRewrite: "foo",
+				Set:         map[string]string{},
+			},
+		},
+		"Host header rewrite by default header policy": {
+			hp: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{
+					Name:  "K-Foo",
+					Value: "foo",
+				}},
+			},
+			dhp: HeadersPolicy{
+				Set: map[string]string{
+					"Host": "bar",
+				},
+			},
+			want: HeadersPolicy{
+				HostRewrite: "bar",
+				Set: map[string]string{
+					"K-Foo": "foo",
+				},
+			},
+		},
 	}
 
 	dynamicHeaders := map[string]string{
@@ -488,12 +646,13 @@ func TestHeadersPolicy(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, gotErr := headersPolicyService(&tc.dhp, tc.hp, dynamicHeaders)
+			tc := tc
+			got, gotErr := headersPolicyService(&tc.dhp, tc.hp, true, dynamicHeaders)
 			if tc.wantErr {
-				assert.Error(t, gotErr)
+				require.Error(t, gotErr)
 			} else {
 				assert.Equal(t, tc.want, *got)
-				assert.NoError(t, gotErr)
+				require.NoError(t, gotErr)
 			}
 		})
 	}
@@ -501,7 +660,7 @@ func TestHeadersPolicy(t *testing.T) {
 
 func TestRateLimitPolicy(t *testing.T) {
 	tests := map[string]struct {
-		in      *contour_api_v1.RateLimitPolicy
+		in      *contour_v1.RateLimitPolicy
 		want    *RateLimitPolicy
 		wantErr string
 	}{
@@ -510,12 +669,12 @@ func TestRateLimitPolicy(t *testing.T) {
 			want: nil,
 		},
 		"nil local rate limit policy": {
-			in:   &contour_api_v1.RateLimitPolicy{},
+			in:   &contour_v1.RateLimitPolicy{},
 			want: nil,
 		},
 		"local - no burst": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 3,
 					Unit:     "second",
 				},
@@ -529,8 +688,8 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"local - burst": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 3,
 					Unit:     "second",
 					Burst:    4,
@@ -545,8 +704,8 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"local - custom response status code": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests:           10,
 					Unit:               "minute",
 					ResponseStatusCode: 431,
@@ -562,11 +721,11 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"local - custom response headers to add": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 10,
 					Unit:     "hour",
-					ResponseHeadersToAdd: []contour_api_v1.HeaderValue{
+					ResponseHeadersToAdd: []contour_v1.HeaderValue{
 						{
 							Name:  "header-1",
 							Value: "header-value-1",
@@ -591,11 +750,11 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"local - duplicate response header": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 10,
 					Unit:     "hour",
-					ResponseHeadersToAdd: []contour_api_v1.HeaderValue{
+					ResponseHeadersToAdd: []contour_v1.HeaderValue{
 						{
 							Name:  "duplicate-header",
 							Value: "header-value-1",
@@ -610,11 +769,11 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: "duplicate header addition: \"Duplicate-Header\"",
 		},
 		"local - invalid response header name": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 10,
 					Unit:     "hour",
-					ResponseHeadersToAdd: []contour_api_v1.HeaderValue{
+					ResponseHeadersToAdd: []contour_v1.HeaderValue{
 						{
 							Name:  "invalid-header!",
 							Value: "header-value-1",
@@ -625,8 +784,8 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: `invalid header name "Invalid-Header!": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`,
 		},
 		"local - invalid unit": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 10,
 					Unit:     "invalid-unit",
 				},
@@ -634,8 +793,8 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: "invalid unit \"invalid-unit\" in local rate limit policy",
 		},
 		"local - invalid requests": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 0,
 					Unit:     "second",
 				},
@@ -643,22 +802,22 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: "invalid requests value 0 in local rate limit policy",
 		},
 		"global - multiple descriptors": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Global: &contour_api_v1.GlobalRateLimitPolicy{
-					Descriptors: []contour_api_v1.RateLimitDescriptor{
+			in: &contour_v1.RateLimitPolicy{
+				Global: &contour_v1.GlobalRateLimitPolicy{
+					Descriptors: []contour_v1.RateLimitDescriptor{
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{
-									GenericKey: &contour_api_v1.GenericKeyDescriptor{
+									GenericKey: &contour_v1.GenericKeyDescriptor{
 										Key:   "generic-key-key",
 										Value: "generic-key-value",
 									},
 								},
 								{
-									RemoteAddress: &contour_api_v1.RemoteAddressDescriptor{},
+									RemoteAddress: &contour_v1.RemoteAddressDescriptor{},
 								},
 								{
-									RequestHeader: &contour_api_v1.RequestHeaderDescriptor{
+									RequestHeader: &contour_v1.RequestHeaderDescriptor{
 										HeaderName:    "X-Header",
 										DescriptorKey: "request-header-key",
 									},
@@ -666,12 +825,12 @@ func TestRateLimitPolicy(t *testing.T) {
 							},
 						},
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{
-									RemoteAddress: &contour_api_v1.RemoteAddressDescriptor{},
+									RemoteAddress: &contour_v1.RemoteAddressDescriptor{},
 								},
 								{
-									GenericKey: &contour_api_v1.GenericKeyDescriptor{
+									GenericKey: &contour_v1.GenericKeyDescriptor{
 										Key:   "generic-key-key-2",
 										Value: "generic-key-value-2",
 									},
@@ -721,14 +880,14 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"global - multiple descriptor entries set": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Global: &contour_api_v1.GlobalRateLimitPolicy{
-					Descriptors: []contour_api_v1.RateLimitDescriptor{
+			in: &contour_v1.RateLimitPolicy{
+				Global: &contour_v1.GlobalRateLimitPolicy{
+					Descriptors: []contour_v1.RateLimitDescriptor{
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{
-									GenericKey:    &contour_api_v1.GenericKeyDescriptor{},
-									RemoteAddress: &contour_api_v1.RemoteAddressDescriptor{},
+									GenericKey:    &contour_v1.GenericKeyDescriptor{},
+									RemoteAddress: &contour_v1.RemoteAddressDescriptor{},
 								},
 							},
 						},
@@ -738,11 +897,11 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: "rate limit descriptor entry must have exactly one field set",
 		},
 		"global - no descriptor entries set": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Global: &contour_api_v1.GlobalRateLimitPolicy{
-					Descriptors: []contour_api_v1.RateLimitDescriptor{
+			in: &contour_v1.RateLimitPolicy{
+				Global: &contour_v1.GlobalRateLimitPolicy{
+					Descriptors: []contour_v1.RateLimitDescriptor{
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{},
 							},
 						},
@@ -752,14 +911,14 @@ func TestRateLimitPolicy(t *testing.T) {
 			wantErr: "rate limit descriptor entry must have exactly one field set",
 		},
 		"global - header value match": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Global: &contour_api_v1.GlobalRateLimitPolicy{
-					Descriptors: []contour_api_v1.RateLimitDescriptor{
+			in: &contour_v1.RateLimitPolicy{
+				Global: &contour_v1.GlobalRateLimitPolicy{
+					Descriptors: []contour_v1.RateLimitDescriptor{
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{
-									RequestHeaderValueMatch: &contour_api_v1.RequestHeaderValueMatchDescriptor{
-										Headers: []contour_api_v1.HeaderMatchCondition{
+									RequestHeaderValueMatch: &contour_v1.RequestHeaderValueMatchDescriptor{
+										Headers: []contour_v1.HeaderMatchCondition{
 											{
 												Name:       "X-Header",
 												NotPresent: true,
@@ -799,17 +958,17 @@ func TestRateLimitPolicy(t *testing.T) {
 			},
 		},
 		"global and local": {
-			in: &contour_api_v1.RateLimitPolicy{
-				Local: &contour_api_v1.LocalRateLimitPolicy{
+			in: &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 20,
 					Unit:     "second",
 				},
-				Global: &contour_api_v1.GlobalRateLimitPolicy{
-					Descriptors: []contour_api_v1.RateLimitDescriptor{
+				Global: &contour_v1.GlobalRateLimitPolicy{
+					Descriptors: []contour_v1.RateLimitDescriptor{
 						{
-							Entries: []contour_api_v1.RateLimitDescriptorEntry{
+							Entries: []contour_v1.RateLimitDescriptorEntry{
 								{
-									RemoteAddress: &contour_api_v1.RemoteAddressDescriptor{},
+									RemoteAddress: &contour_v1.RemoteAddressDescriptor{},
 								},
 							},
 						},
@@ -842,10 +1001,479 @@ func TestRateLimitPolicy(t *testing.T) {
 			rlp, err := rateLimitPolicy(tc.in)
 
 			if tc.wantErr != "" {
-				assert.EqualError(t, err, tc.wantErr)
+				require.EqualError(t, err, tc.wantErr)
 			} else {
 				assert.Equal(t, tc.want, rlp)
 			}
+		})
+	}
+}
+
+func TestValidateHeaderAlteration(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      *contour_v1.HeadersPolicy
+		dyn     map[string]string
+		dhp     *HeadersPolicy
+		want    *HeadersPolicy
+		wantErr error
+	}{{
+		name: "empty is fine",
+	}, {
+		name: "set two, remove one",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "bar",
+			}, {
+				Name:  "k-baz", // This gets canonicalized
+				Value: "blah",
+			}},
+			Remove: []string{"K-Nada"},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: nil,
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"K-Foo": "bar",
+				"K-Baz": "blah",
+			},
+			Remove: []string{"K-Nada"},
+		},
+	}, {
+		name: "duplicate set",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "bar",
+			}, {
+				Name:  "k-foo", // This gets canonicalized
+				Value: "blah",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp:     nil,
+		wantErr: errors.New(`duplicate header addition: "K-Foo"`),
+	}, {
+		name: "duplicate remove",
+		in: &contour_v1.HeadersPolicy{
+			Remove: []string{"K-Foo", "k-foo"},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp:     nil,
+		wantErr: errors.New(`duplicate header removal: "K-Foo"`),
+	}, {
+		name: "invalid set header",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "  K-Foo",
+				Value: "bar",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp:     nil,
+		wantErr: errors.New(`invalid set header "  K-Foo": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`),
+	}, {
+		name: "invalid set default header",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: &HeadersPolicy{
+			Set: map[string]string{
+				"  K-Foo": "bar",
+			},
+		},
+		wantErr: errors.New(`invalid set header "  K-Foo": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`),
+	}, {
+		name: "invalid remove header",
+		in: &contour_v1.HeadersPolicy{
+			Remove: []string{"  K-Foo"},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp:     nil,
+		wantErr: errors.New(`invalid remove header "  K-Foo": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`),
+	}, {
+		name: "invalid remove default header",
+		in: &contour_v1.HeadersPolicy{
+			Remove: []string{"  K-Foo"},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: &HeadersPolicy{
+			Remove: []string{"  K-Foo"},
+		},
+		wantErr: errors.New(`invalid remove header "  K-Foo": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`),
+	}, {
+		name: "invalid set header: rewrite Host header not supported",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "Host",
+				Value: "bar",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp:     nil,
+		wantErr: errors.New(`rewriting "Host" header is not supported`),
+	}, {
+		name: "invalid set default header: rewrite Host header not supported",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "ook?",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: &HeadersPolicy{
+			Set: map[string]string{
+				"Host": "bar",
+			},
+		},
+		wantErr: errors.New(`rewriting "Host" header is not supported`),
+	}, {
+		name: "percents are escaped",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "100%",
+			}, {
+				Name:  "Lot-Of-Percents",
+				Value: "%%%%%",
+			}, {
+				Name:  "k-baz",                      // This gets canonicalized
+				Value: "%DOWNSTREAM_LOCAL_ADDRESS%", // This is a known Envoy dynamic header
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: nil,
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"K-Foo":           "100%%",
+				"K-Baz":           "%DOWNSTREAM_LOCAL_ADDRESS%",
+				"Lot-Of-Percents": "%%%%%%%%%%",
+			},
+		},
+	}, {
+		name: "dynamic service headers",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "l5d-dst-override",
+				Value: "%CONTOUR_SERVICE_NAME%.%CONTOUR_NAMESPACE%.svc.cluster.local:%CONTOUR_SERVICE_PORT%",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE":    "myns",
+			"CONTOUR_SERVICE_NAME": "myservice",
+			"CONTOUR_SERVICE_PORT": "80",
+		},
+		dhp: nil,
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"L5d-Dst-Override": "myservice.myns.svc.cluster.local:80",
+			},
+		},
+	}, {
+		name: "dynamic service headers without service name and port",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "l5d-dst-override",
+				Value: "%CONTOUR_SERVICE_NAME%.%CONTOUR_NAMESPACE%.svc.cluster.local:%CONTOUR_SERVICE_PORT%",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: nil,
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"L5d-Dst-Override": "%%CONTOUR_SERVICE_NAME%%.myns.svc.cluster.local:%%CONTOUR_SERVICE_PORT%%",
+			},
+		},
+	}, {
+		name: "default headers are combined with given headers and escaped",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "100%",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: &HeadersPolicy{
+			Set: map[string]string{
+				"k-baz":           "%DOWNSTREAM_LOCAL_ADDRESS%", // This gets canonicalized
+				"Lot-Of-Percents": "%%%%%",
+			},
+		},
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"K-Foo":           "100%%",
+				"K-Baz":           "%DOWNSTREAM_LOCAL_ADDRESS%",
+				"Lot-Of-Percents": "%%%%%%%%%%",
+			},
+		},
+	}, {
+		name: "default headers do not replace given headers",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "K-Foo",
+				Value: "100%",
+			}},
+		},
+		dyn: map[string]string{
+			"CONTOUR_NAMESPACE": "myns",
+		},
+		dhp: &HeadersPolicy{
+			Set: map[string]string{
+				"K-Foo": "50%",
+			},
+		},
+		want: &HeadersPolicy{
+			Set: map[string]string{
+				"K-Foo": "100%%",
+			},
+		},
+	}, {
+		name: "Host header rewrite via dynamic header",
+		in: &contour_v1.HeadersPolicy{
+			Set: []contour_v1.HeaderValue{{
+				Name:  "Host",
+				Value: "%REQ(foo)%",
+			}},
+		},
+		wantErr: fmt.Errorf("rewriting \"Host\" header is not supported"),
+	}}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, gotErr := headersPolicyService(test.dhp, test.in, false, test.dyn)
+			assert.Equal(t, test.want, got)
+			assert.Equal(t, test.wantErr, gotErr)
+		})
+	}
+}
+
+func TestServiceCircuitBreakerPolicy(t *testing.T) {
+	tests := map[string]struct {
+		in            *Service
+		globalDefault *contour_v1alpha1.CircuitBreakers
+		want          *Service
+	}{
+		"service is nil and globalDefault is nil": {
+			in:            nil,
+			globalDefault: nil,
+			want:          nil,
+		},
+		"service is nil and globalDefault is not nil": {
+			in:            nil,
+			globalDefault: &contour_v1alpha1.CircuitBreakers{},
+			want:          nil,
+		},
+		"service is not nil and globalDefault is nil": {
+			in: &Service{
+				CircuitBreakers: CircuitBreakers{
+					MaxConnections:        42,
+					MaxPendingRequests:    73,
+					MaxRequests:           89,
+					MaxRetries:            13,
+					PerHostMaxConnections: 23,
+				},
+			},
+			globalDefault: nil,
+			want: &Service{
+				CircuitBreakers: CircuitBreakers{
+					MaxConnections:        42,
+					MaxPendingRequests:    73,
+					MaxRequests:           89,
+					MaxRetries:            13,
+					PerHostMaxConnections: 23,
+				},
+			},
+		},
+		"service is not set but global is": {
+			in: &Service{},
+			globalDefault: &contour_v1alpha1.CircuitBreakers{
+				MaxConnections:        42,
+				MaxPendingRequests:    73,
+				MaxRequests:           89,
+				MaxRetries:            13,
+				PerHostMaxConnections: 23,
+			},
+			want: &Service{
+				CircuitBreakers: CircuitBreakers{
+					MaxConnections:        42,
+					MaxPendingRequests:    73,
+					MaxRequests:           89,
+					MaxRetries:            13,
+					PerHostMaxConnections: 23,
+				},
+			},
+		},
+		"service is not set but global is partial": {
+			in: &Service{},
+			globalDefault: &contour_v1alpha1.CircuitBreakers{
+				MaxConnections:        42,
+				MaxPendingRequests:    73,
+				MaxRequests:           89,
+				PerHostMaxConnections: 23,
+			},
+			want: &Service{
+				CircuitBreakers: CircuitBreakers{
+					MaxConnections:        42,
+					MaxPendingRequests:    73,
+					MaxRequests:           89,
+					MaxRetries:            0,
+					PerHostMaxConnections: 23,
+				},
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := serviceCircuitBreakerPolicy(tc.in, tc.globalDefault)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestExtractHeaderValue(t *testing.T) {
+	tests := map[string]string{
+		"%REQ(X-Header-Name)%":  "X-Header-Name",
+		"%req(X-Header-Name)%":  "",
+		"%REQ( Content-Type )%": "",
+		"REQ(Content-Type)":     "",
+		"%REQ(Content-Type%":    "",
+		"SomeOtherValue":        "",
+	}
+
+	for input, expected := range tests {
+		t.Run(input, func(t *testing.T) {
+			actual := extractHostRewriteHeaderValue(input)
+			if actual != expected {
+				t.Errorf("For input %q, expected %q, got %q", input, expected, actual)
+			}
+		})
+	}
+}
+
+func TestHeadersPolicyRoute(t *testing.T) {
+	tests := []struct {
+		name         string
+		policy       *contour_v1.HeadersPolicy
+		allowRewrite bool
+		dynHeaders   map[string]string
+		expected     *HeadersPolicy
+		expectedErr  error
+	}{
+		{
+			name:     "nil policy",
+			policy:   nil,
+			expected: nil,
+		},
+		{
+			name: "duplicate set headers",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: "X-Header", Value: "Test"}, {Name: "X-Header", Value: "Test2"}},
+			},
+			expectedErr: fmt.Errorf("duplicate header addition: %q", "X-Header"),
+		},
+		{
+			name: "host rewrite not allowed",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: "Host", Value: "Test"}},
+			},
+			allowRewrite: false,
+			expectedErr:  fmt.Errorf("rewriting %q header is not supported", "Host"),
+		},
+		{
+			name: "host rewrite allowed",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: "Host", Value: "Test"}},
+			},
+			allowRewrite: true,
+			expected: &HeadersPolicy{
+				HostRewrite: "Test",
+				Remove:      nil,
+			},
+		},
+		{
+			name: "host rewrite allowed, by header",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: "Host", Value: "%REQ(Test)%"}},
+			},
+			allowRewrite: true,
+			expected: &HeadersPolicy{
+				HostRewrite:       "",
+				HostRewriteHeader: "Test",
+				Remove:            nil,
+			},
+		},
+		{
+			name: "host rewrite allowed, by header. invalid",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: "Host", Value: "%REQ (Test"}},
+			},
+			allowRewrite: true,
+			expected: &HeadersPolicy{
+				HostRewrite:       "%REQ (Test",
+				HostRewriteHeader: "",
+				Remove:            nil,
+			},
+		},
+		{
+			name: "invalid header name",
+			policy: &contour_v1.HeadersPolicy{
+				Set: []contour_v1.HeaderValue{{Name: " Invalid-Header ", Value: "Test"}},
+			},
+			expectedErr: fmt.Errorf(`invalid set header " Invalid-Header ": [a valid HTTP header must consist of alphanumeric characters or '-' (e.g. 'X-Header-Name', regex used for validation is '[-A-Za-z0-9]+')]`),
+		},
+		{
+			name: "duplicate remove headers",
+			policy: &contour_v1.HeadersPolicy{
+				Remove: []string{"X-Header", "X-Header"},
+			},
+			expectedErr: fmt.Errorf("duplicate header removal: %q", "X-Header"),
+		},
+		{
+			name: "valid set and remove headers",
+			policy: &contour_v1.HeadersPolicy{
+				Set:    []contour_v1.HeaderValue{{Name: "X-Header", Value: "Test"}},
+				Remove: []string{"Y-Header"},
+			},
+			expected: &HeadersPolicy{
+				Set:         map[string]string{"X-Header": "Test"},
+				HostRewrite: "",
+				Remove:      []string{"Y-Header"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := headersPolicyRoute(tc.policy, tc.allowRewrite, tc.dynHeaders)
+			assert.Equal(t, tc.expected, result)
+			assert.Equal(t, tc.expectedErr, err)
 		})
 	}
 }

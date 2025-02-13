@@ -3,22 +3,22 @@ PROJECT = contour
 MODULE = github.com/$(ORG)/$(PROJECT)
 REGISTRY ?= ghcr.io/projectcontour
 IMAGE := $(REGISTRY)/$(PROJECT)
-SRCDIRS := ./cmd ./internal ./apis
-LOCAL_BOOTSTRAP_CONFIG = localenvoyconfig.yaml
-SECURE_LOCAL_BOOTSTRAP_CONFIG = securelocalenvoyconfig.yaml
-ENVOY_IMAGE = docker.io/envoyproxy/envoy:v1.19.1
-GATEWAY_API_VERSION = $(shell grep "sigs.k8s.io/gateway-api" go.mod | awk '{print $$2}')
+GATEWAY_API_VERSION ?= $(shell grep "sigs.k8s.io/gateway-api" go.mod | awk '{print $$2}')
 
 # Used to supply a local Envoy docker container an IP to connect to that is running
 # 'contour serve'. On MacOS this will work, but may not on other OSes. Defining
 # LOCALIP as an env var before running 'make local' will solve that.
-LOCALIP ?= $(shell ifconfig | grep inet | grep -v '::' | grep -v 127.0.0.1 | head -n1 | awk '{print $$2}')
+LOCALIP ?= $(shell ifconfig | grep inet | grep -v '::' | grep -v 'inet 127.' | head -n1 | awk '{print $$2}')
 
 # Variables needed for running e2e tests.
 CONTOUR_E2E_LOCAL_HOST ?= $(LOCALIP)
-# Variables needed for running upgrade tests.
+# Variables needed for running e2e and upgrade tests.
 CONTOUR_UPGRADE_FROM_VERSION ?= $(shell ./test/scripts/get-contour-upgrade-from-version.sh)
-CONTOUR_UPGRADE_TO_IMAGE ?= ghcr.io/projectcontour/contour:main
+CONTOUR_E2E_IMAGE ?= ghcr.io/projectcontour/contour:main
+CONTOUR_E2E_PACKAGE_FOCUS ?= ./test/e2e
+# Optional variables
+# Run specific test specs (matched by regex)
+CONTOUR_E2E_TEST_FOCUS ?=
 
 TAG_LATEST ?= false
 
@@ -40,13 +40,21 @@ endif
 IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 
 # Base build image to use.
-BUILD_BASE_IMAGE ?= golang:1.17.0
+BUILD_BASE_IMAGE ?= golang:1.23.4@sha256:7ea4c9dcb2b97ff8ee80a67db3d44f98c8ffa0d191399197007d8459c1453041
 
 # Enable build with CGO.
 BUILD_CGO_ENABLED ?= 0
 
+# Specify private modules.
+BUILD_GOPRIVATE ?= ""
+
 # Go module mirror to use.
 BUILD_GOPROXY ?= https://proxy.golang.org
+
+# Checksum db to use.
+BUILD_GOSUMDB ?= sum.golang.org
+
+BUILD_GOEXPERIMENT ?= none
 
 # Sets GIT_REF to a tag if it's present, otherwise the short git sha will be used.
 GIT_REF = $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short=8 --verify HEAD)
@@ -116,26 +124,32 @@ multiarch-build: ## Build and optionally push a multi-arch Contour container ima
 	@mkdir -p $(shell pwd)/image
 	docker buildx build $(IMAGE_RESULT_FLAG) \
 		--platform $(IMAGE_PLATFORMS) \
+		--build-arg "BUILD_GOPRIVATE=$(BUILD_GOPRIVATE)" \
 		--build-arg "BUILD_GOPROXY=$(BUILD_GOPROXY)" \
+		--build-arg "BUILD_GOSUMDB=$(BUILD_GOSUMDB)" \
 		--build-arg "BUILD_BASE_IMAGE=$(BUILD_BASE_IMAGE)" \
 		--build-arg "BUILD_VERSION=$(BUILD_VERSION)" \
 		--build-arg "BUILD_BRANCH=$(BUILD_BRANCH)" \
 		--build-arg "BUILD_SHA=$(BUILD_SHA)" \
 		--build-arg "BUILD_CGO_ENABLED=$(BUILD_CGO_ENABLED)" \
 		--build-arg "BUILD_EXTRA_GO_LDFLAGS=$(BUILD_EXTRA_GO_LDFLAGS)" \
+		--build-arg "BUILD_GOEXPERIMENT=$(BUILD_GOEXPERIMENT)" \
 		$(DOCKER_BUILD_LABELS) \
 		$(IMAGE_TAGS) \
 		$(shell pwd)
 
 container: ## Build the Contour container image
 	docker build \
+		--build-arg "BUILD_GOPRIVATE=$(BUILD_GOPRIVATE)" \
 		--build-arg "BUILD_GOPROXY=$(BUILD_GOPROXY)" \
+		--build-arg "BUILD_GOSUMDB=$(BUILD_GOSUMDB)" \
 		--build-arg "BUILD_BASE_IMAGE=$(BUILD_BASE_IMAGE)" \
 		--build-arg "BUILD_VERSION=$(BUILD_VERSION)" \
 		--build-arg "BUILD_BRANCH=$(BUILD_BRANCH)" \
 		--build-arg "BUILD_SHA=$(BUILD_SHA)" \
 		--build-arg "BUILD_CGO_ENABLED=$(BUILD_CGO_ENABLED)" \
 		--build-arg "BUILD_EXTRA_GO_LDFLAGS=$(BUILD_EXTRA_GO_LDFLAGS)" \
+		--build-arg "BUILD_GOEXPERIMENT=$(BUILD_GOEXPERIMENT)" \
 		$(DOCKER_BUILD_LABELS) \
 		$(shell pwd) \
 		--tag $(IMAGE):$(VERSION)
@@ -180,19 +194,19 @@ lint-codespell:
 .PHONY: lint-golint
 lint-golint:
 	@echo Running Go linter ...
-	@./hack/golangci-lint run --build-tags=e2e
+	@./hack/golangci-lint run --build-tags=e2e,conformance,gcp,oidc,none
 
 .PHONY: lint-yamllint
 lint-yamllint:
 	@echo Running YAML linter ...
-	@./hack/yamllint examples/ site/content/examples/ ./versions.yaml
+	@./hack/yamllint
 
 # Check that CLI flags are formatted consistently. We are checking
 # for calls to Kingpin Flags() and Command() APIs where the 2nd
 # argument (the help text) either doesn't start with a capital letter
 # or doesn't end with a period. "xDS" and "gRPC" are exceptions to
 # the first rule.
-.PHONY: check-flags
+.PHONY: lint-flags
 lint-flags:
 	@if git --no-pager grep --extended-regexp '[.]Flag\("[^"]+", "([^A-Zxg][^"]+|[^"]+[^.])"' cmd/contour; then \
 		echo "ERROR: CLI flag help strings must start with a capital and end with a period."; \
@@ -203,9 +217,16 @@ lint-flags:
 		exit 2; \
 	fi
 
+.PHONY: format
+format: ## Run gofumpt to format the codebase.
+	@echo Running gofumpt...
+	@go run mvdan.cc/gofumpt@v0.5.0 -l -w -extra .
+	@echo Running gci...
+	@go run github.com/daixiang0/gci@v0.12.1 write . --skip-generated -s standard -s default -s "prefix(github.com/projectcontour/contour)" --custom-order
+
 .PHONY: generate
 generate: ## Re-generate generated code and documentation
-generate: generate-rbac generate-crd-deepcopy generate-crd-yaml generate-gateway-crd-yaml generate-deployment generate-api-docs generate-metrics-docs generate-uml
+generate: generate-rbac generate-crd-deepcopy generate-crd-yaml generate-gateway-yaml generate-deployment generate-api-docs generate-metrics-docs generate-uml generate-go
 
 .PHONY: generate-rbac
 generate-rbac:
@@ -220,18 +241,21 @@ generate-crd-deepcopy:
 .PHONY: generate-deployment
 generate-deployment:
 	@echo Generating example deployment files ...
-	@./hack/generate-deployment.sh
+	@./hack/generate-deployment.sh deployment
+	@./hack/generate-deployment.sh daemonset
 	@./hack/generate-gateway-deployment.sh
+	@./hack/generate-provisioner-deployment.sh
 
 .PHONY: generate-crd-yaml
 generate-crd-yaml:
 	@echo "Generating Contour CRD YAML documents..."
 	@./hack/generate-crd-yaml.sh
 
-.PHONY: generate-gateway-crd-yaml
-generate-gateway-crd-yaml:
+.PHONY: generate-gateway-yaml
+generate-gateway-yaml:
 	@echo "Generating Gateway API CRD YAML documents..."
-	@kubectl kustomize -o examples/gateway/00-crds.yaml "github.com/kubernetes-sigs/gateway-api/config/crd?ref=${GATEWAY_API_VERSION}"
+	@GATEWAY_API_VERSION=$(GATEWAY_API_VERSION) ./hack/generate-gateway-yaml.sh
+
 
 .PHONY: generate-api-docs
 generate-api-docs:
@@ -240,8 +264,13 @@ generate-api-docs:
 
 .PHONY: generate-metrics-docs
 generate-metrics-docs:
-	@echo Generating metrics documentation ...
-	@cd site/content/guides/metrics && rm -f *.md && go run ../../../../hack/generate-metrics-doc.go
+	@echo "Generating metrics documentation..."
+	@cd site/content/docs/main/guides/metrics && rm -f *.md && go run ../../../../../../hack/generate-metrics-doc.go
+
+.PHONY: generate-go
+generate-go:
+	@echo "Generating mocks..."
+	@go run github.com/vektra/mockery/v2
 
 .PHONY: check-generate
 check-generate: generate
@@ -269,45 +298,58 @@ site-check: ## Test the site's links
 # Tools for testing and troubleshooting
 
 .PHONY: setup-kind-cluster
-setup-kind-cluster: ## Make a kind cluster with standard ports forwarded
+setup-kind-cluster: ## Make a kind cluster for testing
 	./test/scripts/make-kind-cluster.sh
 
 .PHONY: install-contour-working
 install-contour-working: | setup-kind-cluster ## Install the local working directory version of Contour into a kind cluster
 	./test/scripts/install-contour-working.sh
 
-.PHONY: install-contour-release 
+.PHONY: install-contour-release
 install-contour-release: | setup-kind-cluster ## Install the release version of Contour in CONTOUR_UPGRADE_FROM_VERSION, defaults to latest
 	./test/scripts/install-contour-release.sh $(CONTOUR_UPGRADE_FROM_VERSION)
 
+.PHONY: install-provisioner-working
+install-provisioner-working: | setup-kind-cluster ## Set up the Contour provisioner for local testing
+	./test/scripts/install-provisioner-working.sh
+
+.PHONY: install-provisioner-release
+install-provisioner-release: | setup-kind-cluster ## Install the release version of the Contour gateway provisioner in CONTOUR_UPGRADE_FROM_VERSION, defaults to latest
+	./test/scripts/install-provisioner-release.sh $(CONTOUR_UPGRADE_FROM_VERSION)
+
+
 .PHONY: e2e
-e2e: | setup-kind-cluster run-e2e cleanup-kind ## Run E2E tests against a real k8s cluster
+e2e: | setup-kind-cluster load-contour-image-kind run-e2e cleanup-kind ## Run E2E tests against a real k8s cluster
 
 .PHONY: run-e2e
 run-e2e:
 	CONTOUR_E2E_LOCAL_HOST=$(CONTOUR_E2E_LOCAL_HOST) \
-		ginkgo -tags=e2e -mod=readonly -skip-package=upgrade -keep-going -randomize-suites -randomize-all -slow-spec-threshold=15s -r -v ./test/e2e
+	CONTOUR_E2E_IMAGE=$(CONTOUR_E2E_IMAGE) \
+	go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e -mod=readonly -skip-package=upgrade,bench -keep-going -randomize-suites -randomize-all -poll-progress-after=120s --focus '$(CONTOUR_E2E_TEST_FOCUS)' -r $(CONTOUR_E2E_PACKAGE_FOCUS)
 
 .PHONY: cleanup-kind
 cleanup-kind:
 	./test/scripts/cleanup.sh
 
-## This requires the multiarch-build target to have been run,
-## which puts the Contour docker image at <repo>/image/contour-version.tar.gz
-## It can't be run as a Make dependency, because we need to do it as a pre-step
-## during our build to speed things up.
+## Loads contour image into kind cluster specified by CLUSTERNAME (default
+## contour-e2e). By default for local development will build the current
+## working contour source and load into the cluster. If LOAD_PREBUILT_IMAGE
+## is specified and set to true, it will load a pre-build image. This requires
+## the multiarch-build target to have been run which puts the Contour docker
+## image at <repo>/image/contour-version.tar.gz. This second option is chosen
+## in CI to speed up builds.
 .PHONY: load-contour-image-kind
-load-contour-image-kind: ## Load Contour image from image/ into Kind. Image can be made with `make multiarch-build`
+load-contour-image-kind: ## Load Contour image from building working source or pre-built image into Kind.
 	./test/scripts/kind-load-contour-image.sh
 
 .PHONY: upgrade
-upgrade: | install-contour-release load-contour-image-kind run-upgrade cleanup-kind ## Run upgrade tests against a real k8s cluster
+upgrade: | setup-kind-cluster load-contour-image-kind run-upgrade cleanup-kind ## Run upgrade tests against a real k8s cluster
 
 .PHONY: run-upgrade
 run-upgrade:
 	CONTOUR_UPGRADE_FROM_VERSION=$(CONTOUR_UPGRADE_FROM_VERSION) \
-		CONTOUR_UPGRADE_TO_IMAGE=$(CONTOUR_UPGRADE_TO_IMAGE) \
-		ginkgo -tags=e2e -mod=readonly -randomize-all -slow-spec-threshold=300s -v ./test/e2e/upgrade
+		CONTOUR_E2E_IMAGE=$(CONTOUR_E2E_IMAGE) \
+		go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e -mod=readonly -randomize-all -poll-progress-after=300s -v ./test/e2e/upgrade
 
 .PHONY: check-ingress-conformance
 check-ingress-conformance: | install-contour-working run-ingress-conformance cleanup-kind ## Run Ingress controller conformance
@@ -315,6 +357,28 @@ check-ingress-conformance: | install-contour-working run-ingress-conformance cle
 .PHONY: run-ingress-conformance
 run-ingress-conformance:
 	./test/scripts/run-ingress-conformance.sh
+
+.PHONY: gateway-conformance
+gateway-conformance: | setup-kind-cluster load-contour-image-kind run-gateway-conformance cleanup-kind ## Setup a kind cluster and run Gateway API conformance tests in it.
+
+.PHONY: run-gateway-conformance
+run-gateway-conformance: ## Run Gateway API conformance tests against the current cluster.
+	GATEWAY_API_VERSION=$(GATEWAY_API_VERSION) ./test/scripts/run-gateway-conformance.sh
+
+.PHONY: deploy-gcp-bench-cluster
+deploy-gcp-bench-cluster:
+	./test/scripts/gcp-bench-cluster.sh deploy
+
+.PHONY: teardown-gcp-bench-cluster
+teardown-gcp-bench-cluster:
+	./test/scripts/gcp-bench-cluster.sh teardown
+
+.PHONY: run-bench
+run-bench:
+	go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e -mod=readonly -keep-going -randomize-suites -randomize-all -poll-progress-after=4h -timeout=5h -r -v ./test/e2e/bench
+
+.PHONY: bench
+bench: deploy-gcp-bench-cluster run-bench teardown-gcp-bench-cluster
 
 help: ## Display this help
 	@echo Contour high performance Ingress controller for Kubernetes

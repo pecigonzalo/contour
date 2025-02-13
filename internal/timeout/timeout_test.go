@@ -10,13 +10,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package timeout
 
 import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParse(t *testing.T) {
@@ -59,11 +60,11 @@ func TestParse(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			got, gotErr := Parse(tc.duration)
-			assert.Equal(t, tc.want, got)
+			require.Equal(t, tc.want, got)
 			if tc.wantErr {
-				assert.Error(t, gotErr)
+				require.Error(t, gotErr)
 			} else {
-				assert.NoError(t, gotErr)
+				require.NoError(t, gotErr)
 			}
 		})
 	}
@@ -101,16 +102,16 @@ func TestParseMaxAge(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			got, gotErr := ParseMaxAge(tc.duration)
-			assert.Equal(t, tc.want, got)
+			require.Equal(t, tc.want, got)
 			if tc.wantErr {
-				assert.Error(t, gotErr)
+				require.Error(t, gotErr)
 			} else {
-				assert.NoError(t, gotErr)
+				require.NoError(t, gotErr)
 			}
 		})
 	}
 }
 
 func TestDurationSetting(t *testing.T) {
-	assert.Equal(t, 10*time.Second, DurationSetting(10*time.Second).Duration())
+	require.Equal(t, 10*time.Second, DurationSetting(10*time.Second).Duration())
 }

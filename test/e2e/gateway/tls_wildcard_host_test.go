@@ -12,55 +12,55 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package gateway
 
 import (
 	"crypto/tls"
 
-	. "github.com/onsi/ginkgo"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	gatewayv1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/projectcontour/contour/internal/gatewayapi"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
-func testTLSWildcardHost(namespace string) {
+func testTLSWildcardHost(namespace string, gateway types.NamespacedName) {
 	Specify("wildcard hostname matching works with TLS", func() {
 		t := f.T()
 		hostSuffix := "wildcardhost.gateway.projectcontour.io"
 
 		f.Fixtures.Echo.Deploy(namespace, "echo")
 
-		route := &gatewayv1alpha1.HTTPRoute{
-			ObjectMeta: metav1.ObjectMeta{
+		route := &gatewayapi_v1.HTTPRoute{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "http-route-1",
-				Labels:    map[string]string{"type": "secure"},
 			},
-			Spec: gatewayv1alpha1.HTTPRouteSpec{
-				Hostnames: []gatewayv1alpha1.Hostname{"*.wildcardhost.gateway.projectcontour.io"},
-				Gateways: &gatewayv1alpha1.RouteGateways{
-					Allow: gatewayAllowTypePtr(gatewayv1alpha1.GatewayAllowAll),
+			Spec: gatewayapi_v1.HTTPRouteSpec{
+				Hostnames: []gatewayapi_v1.Hostname{"*.wildcardhost.gateway.projectcontour.io"},
+				CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+					ParentRefs: []gatewayapi_v1.ParentReference{
+						{
+							Namespace:   ptr.To(gatewayapi_v1.Namespace(gateway.Namespace)),
+							Name:        gatewayapi_v1.ObjectName(gateway.Name),
+							SectionName: ptr.To(gatewayapi_v1.SectionName("secure")),
+						},
+					},
 				},
-				Rules: []gatewayv1alpha1.HTTPRouteRule{
+				Rules: []gatewayapi_v1.HTTPRouteRule{
 					{
-						Matches: []gatewayv1alpha1.HTTPRouteMatch{{
-							Path: &gatewayv1alpha1.HTTPPathMatch{
-								Type:  pathMatchTypePtr(gatewayv1alpha1.PathMatchPrefix),
-								Value: stringPtr("/"),
-							},
-						}},
-						ForwardTo: []gatewayv1alpha1.HTTPRouteForwardTo{{
-							ServiceName: stringPtr("echo"),
-							Port:        portNumPtr(80),
-						}},
+						Matches:     gatewayapi.HTTPRouteMatch(gatewayapi_v1.PathMatchPathPrefix, "/"),
+						BackendRefs: gatewayapi.HTTPBackendRef("echo", 80, 1),
 					},
 				},
 			},
 		}
-		f.CreateHTTPRouteAndWaitFor(route, httpRouteAdmitted)
+		require.True(f.T(), f.CreateHTTPRouteAndWaitFor(route, e2e.HTTPRouteAccepted))
 
 		cases := []struct {
 			hostname   string
@@ -80,7 +80,7 @@ func testTLSWildcardHost(namespace string) {
 			{
 				hostname:   "a.random3." + hostSuffix,
 				sni:        "a.random3." + hostSuffix,
-				wantStatus: 404,
+				wantStatus: 200,
 			},
 			{
 				hostname:   "random4." + hostSuffix,

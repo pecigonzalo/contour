@@ -19,9 +19,6 @@ spec:
       app: contour
   template:
     metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
       labels:
         app: contour
     spec:
@@ -65,7 +62,6 @@ spec:
         readinessProbe:
           tcpSocket:
             port: 8001
-          initialDelaySeconds: 15
           periodSeconds: 10
         volumeMounts:
           - name: contourcert

@@ -18,21 +18,18 @@ package dag
 import (
 	"errors"
 	"fmt"
+	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	core_v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/projectcontour/contour/internal/status"
 	"github.com/projectcontour/contour/internal/timeout"
-	"github.com/projectcontour/contour/internal/xds"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
-
-// Vertex is a node in the DAG that can be visited.
-type Vertex interface {
-	Visit(func(Vertex))
-}
 
 // Observer is an interface for receiving notification of DAG updates.
 type Observer interface {
@@ -60,42 +57,17 @@ func ComposeObservers(observers ...Observer) Observer {
 	})
 }
 
-// A DAG represents a directed acyclic graph of objects representing the relationship
-// between Kubernetes Ingress objects, the backend Services, and Secret objects.
-// The DAG models these relationships as Roots and Vertices.
 type DAG struct {
 	// StatusCache holds a cache of status updates to send.
 	StatusCache status.Cache
 
-	// roots are the root vertices of this DAG.
-	roots []Vertex
-}
+	Listeners         map[string]*Listener
+	ExtensionClusters []*ExtensionCluster
 
-// Visit calls fn on each root of this DAG.
-func (d *DAG) Visit(fn func(Vertex)) {
-	for _, r := range d.roots {
-		fn(r)
-	}
-}
-
-// AddRoot appends the given root to the DAG's roots.
-func (d *DAG) AddRoot(root Vertex) {
-	d.roots = append(d.roots, root)
-}
-
-// RemoveRoot removes the given root from the DAG's roots if it exists.
-func (d *DAG) RemoveRoot(root Vertex) {
-	idx := -1
-	for i := range d.roots {
-		if d.roots[i] == root {
-			idx = i
-			break
-		}
-	}
-
-	if idx >= 0 {
-		d.roots = append(d.roots[:idx], d.roots[idx+1:]...)
-	}
+	// Set this to true if Contour is configured with a Gateway
+	// and Listeners are derived from the Gateway's Listeners, or
+	// false otherwise.
+	HasDynamicListeners bool
 }
 
 type MatchCondition interface {
@@ -169,10 +141,12 @@ const (
 
 // HeaderMatchCondition matches request headers by MatchType
 type HeaderMatchCondition struct {
-	Name      string
-	Value     string
-	MatchType string
-	Invert    bool
+	Name                string
+	Value               string
+	MatchType           string
+	Invert              bool
+	IgnoreCase          bool
+	TreatMissingAsEmpty bool
 }
 
 func (hc *HeaderMatchCondition) String() string {
@@ -180,22 +154,128 @@ func (hc *HeaderMatchCondition) String() string {
 		"name=" + hc.Name,
 		"value=" + hc.Value,
 		"matchtype=", hc.MatchType,
+		"TreatMissingAsEmpty=", strconv.FormatBool(hc.TreatMissingAsEmpty),
 		"invert=", strconv.FormatBool(hc.Invert),
+		"ignorecase=", strconv.FormatBool(hc.IgnoreCase),
 	}, "&")
 
 	return "header: " + details
 }
 
-// DirectResponse allows for a specific HTTP status code
+const (
+	// QueryParamMatchTypeExact matches a querystring parameter value exactly.
+	QueryParamMatchTypeExact = "exact"
+
+	// QueryParamMatchTypePrefix matches a querystring parameter value is
+	// prefixed by a given string.
+	QueryParamMatchTypePrefix = "prefix"
+
+	// QueryParamMatchTypeSuffix matches a querystring parameter value is
+	// suffixed by a given string.
+	QueryParamMatchTypeSuffix = "suffix"
+
+	// QueryParamMatchTypeRegex matches a querystring parameter value against
+	// given regular expression.
+	QueryParamMatchTypeRegex = "regex"
+
+	// QueryParamMatchTypeContains matches a querystring parameter value
+	// contains the given string.
+	QueryParamMatchTypeContains = "contains"
+
+	// QueryParamMatchTypePresent matches a querystring parameter if present.
+	QueryParamMatchTypePresent = "present"
+)
+
+// QueryParamMatchCondition matches querystring parameters by MatchType
+type QueryParamMatchCondition struct {
+	Name       string
+	Value      string
+	MatchType  string
+	IgnoreCase bool
+}
+
+func (qc *QueryParamMatchCondition) String() string {
+	details := strings.Join([]string{
+		"name=" + qc.Name,
+		"value=" + qc.Value,
+		"matchtype=", qc.MatchType,
+		"ignorecase=", strconv.FormatBool(qc.IgnoreCase),
+	}, "&")
+
+	return "queryparam: " + details
+}
+
+// DirectResponse allows for a specific HTTP status code and body
 // to be the response to a route request vs routing to
 // an envoy cluster.
 type DirectResponse struct {
+	// StatusCode is  the HTTP response status to be returned.
 	StatusCode uint32
+	// Body is the content of the response body.
+	Body string
+}
+
+// Redirect allows for a redirect to be the response
+// to a route request vs. routing to an envoy cluster.
+type Redirect struct {
+	// Hostname is the host name to redirect to.
+	Hostname string
+
+	// Scheme is the scheme (http or https) to
+	// use in the redirect.
+	Scheme string
+
+	// PortNumber is the port to redirect to,
+	// if any.
+	PortNumber uint32
+
+	// StatusCode is the HTTP response code to
+	// use. Valid options are 301, 302, 303, 307, or 308.
+	StatusCode int
+
+	// PathRewritePolicy is the policy for rewriting
+	// the path during redirect.
+	PathRewritePolicy *PathRewritePolicy
+}
+
+const (
+	// InternalRedirectCrossSchemeNever deny following a redirect if the schemes are different.
+	InternalRedirectCrossSchemeNever = "never"
+
+	// InternalRedirectCrossSchemeSafeOnly allow following a redirect if the schemes
+	// are the same, or if it is considered safe, which means if the downstream scheme is HTTPS,
+	// both HTTPS and HTTP redirect targets are allowed, but if the downstream scheme is HTTP,
+	// only HTTP redirect targets are allowed.
+	InternalRedirectCrossSchemeSafeOnly = "safeOnly"
+
+	// InternalRedirectCrossSchemeAlways allow following a redirect whatever the schemes.
+	InternalRedirectCrossSchemeAlways = "always"
+)
+
+// InternalRedirectPolicy defines if envoy should handle redirect
+// response internally instead of sending it downstream.
+// https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-internalredirectpolicy
+type InternalRedirectPolicy struct {
+	// MaxInternalRedirects An internal redirect is not handled, unless the number
+	// of previous internal redirects that a downstream request has
+	// encountered is lower than this value
+	MaxInternalRedirects uint32
+
+	// RedirectResponseCodes If unspecified, only 302 will be treated as internal redirect.
+	// Only 301, 302, 303, 307 and 308 are valid values
+	RedirectResponseCodes []uint32
+
+	// AllowCrossSchemeRedirect specifies how to handle a redirect when the downstream url
+	// and the redirect target url have different scheme.
+	AllowCrossSchemeRedirect string
+
+	// If DenyRepeatedRouteRedirect is true, rejects redirect targets that are pointing to a route that has
+	// been followed by a previous redirect from the current route.
+	DenyRepeatedRouteRedirect bool
 }
 
 // Route defines the properties of a route to a Cluster.
 type Route struct {
-
 	// PathMatchCondition specifies a MatchCondition to match on the request path.
 	// Must not be nil.
 	PathMatchCondition MatchCondition
@@ -203,6 +283,15 @@ type Route struct {
 	// HeaderMatchConditions specifies a set of additional Conditions to
 	// match on the request headers.
 	HeaderMatchConditions []HeaderMatchCondition
+
+	// QueryParamMatchConditions specifies a set of additional Conditions to
+	// match on the querystring parameters.
+	QueryParamMatchConditions []QueryParamMatchCondition
+
+	// Priority specifies the relative priority of the Route when compared to other
+	// Routes that may have equivalent match conditions. A lower value here means the
+	// Route has a higher priority.
+	Priority uint8
 
 	Clusters []*Cluster
 
@@ -223,16 +312,16 @@ type Route struct {
 	Websocket bool
 
 	// TimeoutPolicy defines the timeout request/idle
-	TimeoutPolicy TimeoutPolicy
+	TimeoutPolicy RouteTimeoutPolicy
 
 	// RetryPolicy defines the retry / number / timeout options for a route
 	RetryPolicy *RetryPolicy
 
 	// Indicates that during forwarding, the matched prefix (or path) should be swapped with this value
-	PrefixRewrite string
+	PathRewritePolicy *PathRewritePolicy
 
-	// Mirror Policy defines the mirroring policy for this Route.
-	MirrorPolicy *MirrorPolicy
+	// MirrorPolicies is a list defining the mirroring policies for this Route.
+	MirrorPolicies []*MirrorPolicy
 
 	// RequestHeadersPolicy defines how headers are managed during forwarding
 	RequestHeadersPolicy *HeadersPolicy
@@ -240,8 +329,15 @@ type Route struct {
 	// ResponseHeadersPolicy defines how headers are managed during forwarding
 	ResponseHeadersPolicy *HeadersPolicy
 
+	// CookieRewritePolicies is a list of policies that define how HTTP Set-Cookie
+	// headers should be rewritten for responses on this route.
+	CookieRewritePolicies []CookieRewritePolicy
+
 	// RateLimitPolicy defines if/how requests for the route are rate limited.
 	RateLimitPolicy *RateLimitPolicy
+
+	// RateLimitPerRoute defines how the route should handle rate limits defined by the virtual host.
+	RateLimitPerRoute *RateLimitPerRoute
 
 	// RequestHashPolicies is a list of policies for configuring hashes on
 	// request attributes.
@@ -251,11 +347,44 @@ type Route struct {
 	// to be the response to a route request vs routing to
 	// an envoy cluster.
 	DirectResponse *DirectResponse
+
+	// Redirect allows for a 301 Redirect to be the response
+	// to a route request vs. routing to an envoy cluster.
+	Redirect *Redirect
+
+	// JWTProvider names a JWT provider defined on the virtual
+	// host to be used to validate JWTs on requests to this route.
+	JWTProvider string
+
+	// InternalRedirectPolicy defines if envoy should handle redirect
+	// response internally instead of sending it downstream.
+	InternalRedirectPolicy *InternalRedirectPolicy
+
+	// IPFilterAllow determines how the IPFilterRules should be applied.
+	// If true, traffic is allowed only if it matches a rule.
+	// If false, traffic is allowed only if it doesn't match any rule.
+	IPFilterAllow bool
+
+	// IPFilterRules is a list of ipv4/6 filter rules for which matching
+	// requests should be filtered. The behavior of the filters is governed
+	// by IPFilterAllow.
+	IPFilterRules []IPFilterRule
+
+	// Metadata fields that can be used for access logging.
+	Kind      string
+	Namespace string
+	Name      string
 }
 
 // HasPathPrefix returns whether this route has a PrefixPathCondition.
 func (r *Route) HasPathPrefix() bool {
 	_, ok := r.PathMatchCondition.(*PrefixMatchCondition)
+	return ok
+}
+
+// HasPathExact returns whether this route has a ExactPathCondition.
+func (r *Route) HasPathExact() bool {
+	_, ok := r.PathMatchCondition.(*ExactMatchCondition)
 	return ok
 }
 
@@ -265,14 +394,24 @@ func (r *Route) HasPathRegex() bool {
 	return ok
 }
 
-// TimeoutPolicy defines the timeout policy for a route.
-type TimeoutPolicy struct {
+// RouteTimeoutPolicy defines the timeout policy for a route.
+type RouteTimeoutPolicy struct {
 	// ResponseTimeout is the timeout applied to the response
 	// from the backend server.
 	ResponseTimeout timeout.Setting
 
-	// IdleTimeout is the timeout applied to idle connections.
-	IdleTimeout timeout.Setting
+	// IdleStreamTimeout is the timeout applied to idle connection during single request-response.
+	// Stream is HTTP/2 and HTTP/3 concept, for HTTP/1 it refers to single request-response within connection.
+	IdleStreamTimeout timeout.Setting
+}
+
+// ClusterTimeoutPolicy defines the timeout policy for a cluster.
+type ClusterTimeoutPolicy struct {
+	// IdleConnectionTimeout is the timeout applied to idle connection.
+	IdleConnectionTimeout timeout.Setting
+
+	// ConnectTimeout defines how long the proxy should wait when establishing connection to upstream service.
+	ConnectTimeout time.Duration
 }
 
 // RetryPolicy defines the retry / number / timeout options
@@ -293,9 +432,25 @@ type RetryPolicy struct {
 	PerTryTimeout timeout.Setting
 }
 
+// PathRewritePolicy defines a policy for rewriting the path of
+// the request during forwarding. At most one field should be populated.
+type PathRewritePolicy struct {
+	// Replace the part of the path matched by a prefix match
+	// with this value.
+	PrefixRewrite string
+
+	// Replace the full path with this value.
+	FullPathRewrite string
+
+	// Replace the part of the path matched by the specified
+	// regex with "/" (intended for removing a prefix).
+	PrefixRegexRemove string
+}
+
 // MirrorPolicy defines the mirroring policy for a route.
 type MirrorPolicy struct {
 	Cluster *Cluster
+	Weight  int64
 }
 
 // HeadersPolicy defines how headers are managed during forwarding
@@ -303,9 +458,26 @@ type HeadersPolicy struct {
 	// HostRewrite defines if a host should be rewritten on upstream requests
 	HostRewrite string
 
+	// HostRewriteHeader defines if a host should be rewritten on upstream requests
+	// via a header value. only applicable for routes.
+	HostRewriteHeader string
+
 	Add    map[string]string
 	Set    map[string]string
 	Remove []string
+}
+
+// CookieRewritePolicy defines how attributes of an HTTP Set-Cookie header
+// can be rewritten.
+type CookieRewritePolicy struct {
+	Name   string
+	Path   *string
+	Domain *string
+	// Using an uint since pointer to boolean gets dereferenced in golang
+	// text templates so we have no way of distinguishing if unset or set to false.
+	// 0 means unset, 1 means false, 2 means true
+	Secure   uint
+	SameSite *string
 }
 
 // RateLimitPolicy holds rate limiting parameters.
@@ -327,6 +499,12 @@ type LocalRateLimitPolicy struct {
 type HeaderHashOptions struct {
 	// HeaderName is the name of the header to hash.
 	HeaderName string
+}
+
+// QueryParameterHashOptions contains options for hashing a request query parameter.
+type QueryParameterHashOptions struct {
+	// ParameterName is the name of the query parameter to hash.
+	ParameterName string
 }
 
 // CookieHashOptions contains options for hashing a HTTP cookie.
@@ -353,6 +531,12 @@ type RequestHashPolicy struct {
 
 	// CookieHashOptions is set when a cookie hash is desired.
 	CookieHashOptions *CookieHashOptions
+
+	// HashSourceIP is set to true when source ip hashing is desired.
+	HashSourceIP bool
+
+	// QueryParameterHashOptions is set when a query parameter hash is desired.
+	QueryParameterHashOptions *QueryParameterHashOptions
 }
 
 // GlobalRateLimitPolicy holds global rate limiting parameters.
@@ -395,16 +579,59 @@ type HeaderValueMatchDescriptorEntry struct {
 	Value       string
 }
 
+type VhRateLimitsType int32
+
+const (
+	// VhRateLimitsOverride (Default) will use the virtual host rate limits unless the route has a rate limit policy.
+	VhRateLimitsOverride VhRateLimitsType = iota
+
+	// VhRateLimitsInclude will use the virtual host rate limits even if the route has a rate limit policy.
+	VhRateLimitsInclude
+
+	// VhRateLimitsIgnore will ignore the virtual host rate limits even if the route does not have a rate limit policy.
+	VhRateLimitsIgnore
+)
+
+// RateLimitPerRoute configures how the route should handle the rate limits defined by the virtual host.
+type RateLimitPerRoute struct {
+	VhRateLimits VhRateLimitsType
+}
+
 // RemoteAddressDescriptorEntry configures a descriptor entry
 // that contains the remote address (i.e. client IP).
 type RemoteAddressDescriptorEntry struct{}
+
+// CORSAllowOriginMatchType differentiates different CORS origin matching
+// methods.
+type CORSAllowOriginMatchType int
+
+const (
+	// CORSAllowOriginMatchExact will match an origin exactly.
+	// Wildcard "*" matches should be configured as exact matches.
+	CORSAllowOriginMatchExact CORSAllowOriginMatchType = iota
+
+	// CORSAllowOriginMatchRegex denote a regex pattern will be used
+	// to match the origin in a request.
+	CORSAllowOriginMatchRegex
+)
+
+// CORSAllowOriginMatch specifies how allowed origins should be matched.
+type CORSAllowOriginMatch struct {
+	// Type is the type of matching to perform.
+	// Wildcard matches are treated as exact matches.
+	Type CORSAllowOriginMatchType
+
+	// Value is the pattern to match against, the specifics of which
+	// will depend on the type of match.
+	Value string
+}
 
 // CORSPolicy allows setting the CORS policy
 type CORSPolicy struct {
 	// Specifies whether the resource allows credentials.
 	AllowCredentials bool
 	// AllowOrigin specifies the origins that will be allowed to do CORS requests.
-	AllowOrigin []string
+	AllowOrigin []CORSAllowOriginMatch
 	// AllowMethods specifies the content for the *access-control-allow-methods* header.
 	AllowMethods []string
 	// AllowHeaders specifies the content for the *access-control-allow-headers* header.
@@ -413,6 +640,8 @@ type CORSPolicy struct {
 	ExposeHeaders []string
 	// MaxAge specifies the content for the *access-control-max-age* header.
 	MaxAge timeout.Setting
+	// AllowPrivateNetwork specifies whether to allow private network requests.
+	AllowPrivateNetwork bool
 }
 
 type HeaderValue struct {
@@ -422,46 +651,78 @@ type HeaderValue struct {
 	Value string
 }
 
+// ClientCertificateDetails defines which parts of the client certificate will be forwarded.
+type ClientCertificateDetails struct {
+	// Subject of the client cert.
+	Subject bool
+	// Client cert in URL encoded PEM format.
+	Cert bool
+	// Client cert chain (including the leaf cert) in URL encoded PEM format.
+	Chain bool
+	// DNS type Subject Alternative Names of the client cert.
+	DNS bool
+	// URI type Subject Alternative Name of the client cert.
+	URI bool
+}
+
 // PeerValidationContext defines how to validate the certificate on the upstream service.
 type PeerValidationContext struct {
 	// CACertificate holds a reference to the Secret containing the CA to be used to
 	// verify the upstream connection.
-	CACertificate *Secret
-	// SubjectName holds an optional subject name which Envoy will check against the
-	// certificate presented by the upstream.
-	SubjectName string
+	CACertificates []*Secret
+	// SubjectNames holds optional subject names which Envoy will check against the
+	// certificate presented by the upstream. The first entry must match the value of SubjectName
+	SubjectNames []string
 	// SkipClientCertValidation when set to true will ensure Envoy requests but
 	// does not verify peer certificates.
 	SkipClientCertValidation bool
+	// ForwardClientCertificate adds the selected data from the passed client TLS certificate
+	// to the x-forwarded-client-cert header.
+	ForwardClientCertificate *ClientCertificateDetails
+	// CRL holds a reference to the Secret containing the Certificate Revocation List.
+	// It is used to check for revocation of the peer certificate.
+	CRL *Secret
+	// OnlyVerifyLeafCertCrl when set to true, only the certificate at the end of the
+	// certificate chain will be subject to validation by CRL.
+	OnlyVerifyLeafCertCrl bool
+	// OptionalClientCertificate when set to true will ensure Envoy does not require
+	// that the client sends a certificate but if one is sent it will process it.
+	OptionalClientCertificate bool
 }
 
 // GetCACertificate returns the CA certificate from PeerValidationContext.
 func (pvc *PeerValidationContext) GetCACertificate() []byte {
-	if pvc == nil || pvc.CACertificate == nil {
+	if pvc == nil || len(pvc.CACertificates) == 0 {
 		// No validation required.
 		return nil
 	}
-	return pvc.CACertificate.Object.Data[CACertificateKey]
+	var certs []byte
+	for _, cert := range pvc.CACertificates {
+		if cert == nil {
+			continue
+		}
+		certs = append(certs, cert.Object.Data[CACertificateKey]...)
+	}
+	return certs
 }
 
-// GetSubjectName returns the SubjectName from PeerValidationContext.
-func (pvc *PeerValidationContext) GetSubjectName() string {
+// GetSubjectName returns the SubjectNames from PeerValidationContext.
+func (pvc *PeerValidationContext) GetSubjectNames() []string {
 	if pvc == nil {
 		// No validation required.
-		return ""
+		return nil
 	}
-	return pvc.SubjectName
+
+	return pvc.SubjectNames
 }
 
-func (r *Route) Visit(f func(Vertex)) {
-	for _, c := range r.Clusters {
-		f(c)
+// GetCRL returns the Certificate Revocation List.
+func (pvc *PeerValidationContext) GetCRL() []byte {
+	if pvc == nil || pvc.CRL == nil {
+		// No validation required.
+		return nil
 	}
-	// Allow any mirror clusters to also be visited so that
-	// they are also added to CDS.
-	if r.MirrorPolicy != nil && r.MirrorPolicy.Cluster != nil {
-		f(r.MirrorPolicy.Cluster)
-	}
+	return pvc.CRL.Object.Data[CRLKey]
 }
 
 // A VirtualHost represents a named L4/L7 service.
@@ -470,8 +731,6 @@ type VirtualHost struct {
 	// as defined by RFC 3986.
 	Name string
 
-	ListenerName string
-
 	// CORSPolicy is the cross-origin policy to apply to the VirtualHost.
 	CORSPolicy *CORSPolicy
 
@@ -479,14 +738,36 @@ type VirtualHost struct {
 	// are rate limited.
 	RateLimitPolicy *RateLimitPolicy
 
-	routes map[string]*Route
+	// IPFilterAllow determines how the IPFilterRules should be applied.
+	// If true, traffic is allowed only if it matches a rule.
+	// If false, traffic is allowed only if it doesn't match any rule.
+	IPFilterAllow bool
+
+	// IPFilterRules is a list of ipv4/6 filter rules for which matching
+	// requests should be filtered. The behavior of the filters is governed
+	// by IPFilterAllow.
+	IPFilterRules []IPFilterRule
+
+	Routes map[string]*Route
 }
 
-func (v *VirtualHost) addRoute(route *Route) {
-	if v.routes == nil {
-		v.routes = make(map[string]*Route)
+// Add route to VirtualHosts.Routes map.
+func (v *VirtualHost) AddRoute(route *Route) {
+	if v.Routes == nil {
+		v.Routes = make(map[string]*Route)
 	}
-	v.routes[conditionsToString(route)] = route
+
+	v.Routes[conditionsToString(route)] = route
+}
+
+// HasConflictRoute returns true if there is existing Path + Headers
+// + QueryParams combination match this route candidate and also they are same kind of Route.
+func (v *VirtualHost) HasConflictRoute(route *Route) bool {
+	// If match exist and kind is the same kind, return true.
+	if r, ok := v.Routes[conditionsToString(route)]; ok && r.Kind == route.Kind {
+		return true
+	}
+	return false
 }
 
 func conditionsToString(r *Route) string {
@@ -494,26 +775,26 @@ func conditionsToString(r *Route) string {
 	for _, cond := range r.HeaderMatchConditions {
 		s = append(s, cond.String())
 	}
-	return strings.Join(s, ",")
-}
-
-func (v *VirtualHost) Visit(f func(Vertex)) {
-	for _, r := range v.routes {
-		f(r)
+	for _, cond := range r.QueryParamMatchConditions {
+		s = append(s, cond.String())
 	}
+	return strings.Join(s, ",")
 }
 
 func (v *VirtualHost) Valid() bool {
 	// A VirtualHost is valid if it has at least one route.
-	return len(v.routes) > 0
+	return len(v.Routes) > 0
 }
 
 // A SecureVirtualHost represents a HTTP host protected by TLS.
 type SecureVirtualHost struct {
 	VirtualHost
 
-	// TLS minimum protocol version. Defaults to envoy_tls_v3.TlsParameters_TLS_AUTO
+	// TLS minimum protocol version. Defaults to envoy_transport_socket_tls_v3.TlsParameters_TLS_AUTO
 	MinTLSVersion string
+
+	// TLS maximum protocol version. Defaults to envoy_transport_socket_tls_v3.TlsParameters_TLSv1_3
+	MaxTLSVersion string
 
 	// The cert and key for this host.
 	Secret *Secret
@@ -527,6 +808,59 @@ type SecureVirtualHost struct {
 	// DownstreamValidation defines how to verify the client's certificate.
 	DownstreamValidation *PeerValidationContext
 
+	// ExternalAuthorization contains the configuration for enabling
+	// the ExtAuthz filter.
+	ExternalAuthorization *ExternalAuthorization
+
+	// JWTProviders specify how to verify JWTs.
+	JWTProviders []JWTProvider
+}
+
+type JWTProvider struct {
+	Name       string
+	Issuer     string
+	Audiences  []string
+	RemoteJWKS RemoteJWKS
+	ForwardJWT bool
+}
+
+type RemoteJWKS struct {
+	URI           string
+	Timeout       time.Duration
+	Cluster       DNSNameCluster
+	CacheDuration *time.Duration
+}
+
+// DNSNameCluster is a cluster that routes directly to a DNS
+// name (i.e. not a Kubernetes service).
+type DNSNameCluster struct {
+	Address            string
+	Scheme             string
+	Port               int
+	DNSLookupFamily    string
+	UpstreamValidation *PeerValidationContext
+	UpstreamTLS        *UpstreamTLS
+}
+
+type JWTRule struct {
+	PathMatchCondition    MatchCondition
+	HeaderMatchConditions []HeaderMatchCondition
+	ProviderName          string
+}
+
+type IPFilterRule struct {
+	// Remote determines what ip to filter on.
+	// If true, filters on the remote address. If false, filters on the
+	// immediate network address.
+	Remote bool
+
+	// CIDR is a CIDR block of a ipv4 or ipv6 addresses to filter on.
+	CIDR net.IPNet
+}
+
+// ExternalAuthorization contains the configuration for enabling
+// the ExtAuthz filter.
+type ExternalAuthorization struct {
 	// AuthorizationService points to the extension that client
 	// requests are forwarded to for authorization. If nil, no
 	// authorization is enabled for this host.
@@ -541,33 +875,48 @@ type SecureVirtualHost struct {
 	// only reason to set this to `true` is when you are migrating
 	// from internal to external authorization.
 	AuthorizationFailOpen bool
+
+	// AuthorizationServerWithRequestBody specifies configuration
+	// for buffering request data sent to AuthorizationServer
+	AuthorizationServerWithRequestBody *AuthorizationServerBufferSettings
 }
 
-func (s *SecureVirtualHost) Visit(f func(Vertex)) {
-	s.VirtualHost.Visit(f)
-	if s.TCPProxy != nil {
-		f(s.TCPProxy)
-	}
-	if s.Secret != nil {
-		f(s.Secret) // secret is not required if vhost is using tls passthrough
-	}
+// AuthorizationServerBufferSettings enables ExtAuthz filter to buffer client
+// request data and send it as part of authorization request
+type AuthorizationServerBufferSettings struct {
+	// MaxRequestBytes sets the maximum size of message body
+	// ExtAuthz filter will hold in-memory.
+	// Envoy will return HTTP 413 and will not initiate the
+	// authorization process when buffer reaches the number set
+	// in this field. Refer to
+	// https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto#envoy-v3-api-msg-extensions-filters-http-ext-authz-v3-buffersettings
+	// for more details.
+	MaxRequestBytes uint32
+
+	// If AllowPartialMessage is true,
+	// then Envoy will buffer the body until MaxRequestBytes are reached.
+	AllowPartialMessage bool
+
+	// If PackAsBytes is true, the body sent to Authorization Server is in raw bytes.
+	PackAsBytes bool
 }
 
 func (s *SecureVirtualHost) Valid() bool {
 	// A SecureVirtualHost is valid if either
 	// 1. it has a secret and at least one route.
 	// 2. it has a tcpproxy, because the tcpproxy backend may negotiate TLS itself.
-	return (s.Secret != nil && len(s.routes) > 0) || s.TCPProxy != nil
-}
-
-type ListenerName struct {
-	Name         string
-	ListenerName string
+	return (s.Secret != nil && len(s.Routes) > 0) || s.TCPProxy != nil
 }
 
 // A Listener represents a TCP socket that accepts
 // incoming connections.
 type Listener struct {
+	// Name is the unique name of the listener.
+	Name string
+
+	// Protocol is the listener protocol. Must be
+	// "http" or "https".
+	Protocol string
 
 	// Address is the TCP address to listen on.
 	// If blank 0.0.0.0, or ::/0 for IPv6, is assumed.
@@ -576,27 +925,41 @@ type Listener struct {
 	// Port is the TCP port to listen on.
 	Port int
 
-	VirtualHosts []Vertex
-}
+	// RouteConfigName is the Listener name component to use when
+	// constructing RouteConfig names. If empty, the Listener
+	// name will be used.
+	RouteConfigName string
 
-func (l *Listener) Visit(f func(Vertex)) {
-	for _, vh := range l.VirtualHosts {
-		f(vh)
-	}
+	// FallbackCertRouteConfigName is the name to use for the fallback
+	// cert route config, if one is generated. If empty, the
+	// Listener name will be used.
+	FallbackCertRouteConfigName string
+
+	// Store virtual hosts/secure virtual hosts in both
+	// a slice and a map. The map makes gets more efficient
+	// while building the DAG, but ultimately we need to
+	// produce sorted output which requires the slice.
+	VirtualHosts       []*VirtualHost
+	SecureVirtualHosts []*SecureVirtualHost
+
+	vhostsByName  map[string]*VirtualHost
+	svhostsByName map[string]*SecureVirtualHost
+
+	// TCPProxy configures an L4 TCP proxy for this Listener.
+	// This cannot be used with VirtualHosts/SecureVirtualHosts
+	// on a given Listener.
+	TCPProxy *TCPProxy
+
+	// EnableWebsockets defines whether to enable the websocket
+	// upgrade.
+	EnableWebsockets bool
 }
 
 // TCPProxy represents a cluster of TCP endpoints.
 type TCPProxy struct {
-
 	// Clusters is the, possibly weighted, set
 	// of upstream services to forward decrypted traffic.
 	Clusters []*Cluster
-}
-
-func (t *TCPProxy) Visit(f func(Vertex)) {
-	for _, s := range t.Clusters {
-		f(s)
-	}
 }
 
 // Service represents a single Kubernetes' Service's Port.
@@ -608,52 +971,17 @@ type Service struct {
 	Protocol string
 
 	// Circuit breaking limits
-
-	// Max connections is maximum number of connections
-	// that Envoy will make to the upstream cluster.
-	MaxConnections uint32
-
-	// MaxPendingRequests is maximum number of pending
-	// requests that Envoy will allow to the upstream cluster.
-	MaxPendingRequests uint32
-
-	// MaxRequests is the maximum number of parallel requests that
-	// Envoy will make to the upstream cluster.
-	MaxRequests uint32
-
-	// MaxRetries is the maximum number of parallel retries that
-	// Envoy will allow to the upstream cluster.
-	MaxRetries uint32
+	CircuitBreakers CircuitBreakers
 
 	// ExternalName is an optional field referencing a dns entry for Service type "ExternalName"
 	ExternalName string
-}
-
-// Visit applies the visitor function to the Service vertex.
-func (s *Service) Visit(f func(Vertex)) {
-	// A Service has only one WeightedService entry. Fake up a
-	// ServiceCluster so that the visitor can pretend to not
-	// know this.
-	c := ServiceCluster{
-		ClusterName: xds.ClusterLoadAssignmentName(
-			types.NamespacedName{
-				Name:      s.Weighted.ServiceName,
-				Namespace: s.Weighted.ServiceNamespace,
-			},
-			s.Weighted.ServicePort.Name),
-		Services: []WeightedService{
-			s.Weighted,
-		},
-	}
-
-	f(&c)
 }
 
 // Cluster holds the connection specific parameters that apply to
 // traffic routed to an upstream service.
 type Cluster struct {
 	// Upstream is the backend Kubernetes service traffic arriving
-	// at this Cluster will be forwarded too.
+	// at this Cluster will be forwarded to.
 	Upstream *Service
 
 	// The relative weight of this Cluster compared to its siblings.
@@ -681,6 +1009,10 @@ type Cluster struct {
 	// ResponseHeadersPolicy defines how headers are managed during forwarding
 	ResponseHeadersPolicy *HeadersPolicy
 
+	// CookieRewritePolicies is a list of policies that define how HTTP Set-Cookie
+	// headers should be rewritten for responses on this route.
+	CookieRewritePolicies []CookieRewritePolicy
+
 	// SNI is used when a route proxies an upstream using tls.
 	// SNI describes how the SNI is set on a Cluster and is configured via RequestHeadersPolicy.Host key.
 	// Policies set on service are used before policies set on a route. Otherwise the value of the externalService
@@ -694,30 +1026,45 @@ type Cluster struct {
 	// will only perform a lookup for addresses in the IPv6 family.
 	// If AUTO is configured, the DNS resolver will first perform a lookup
 	// for addresses in the IPv6 family and fallback to a lookup for addresses
-	// in the IPv4 family.
+	// in the IPv4 family. If ALL is specified, the DNS resolver will perform a lookup for
+	// both IPv4 and IPv6 families, and return all resolved addresses.
+	// When this is used, Happy Eyeballs will be enabled for upstream connections.
+	// Refer to Happy Eyeballs Support for more information.
 	// Note: This only applies to externalName clusters.
 	DNSLookupFamily string
 
 	// ClientCertificate is the optional identifier of the TLS secret containing client certificate and
 	// private key to be used when establishing TLS connection to upstream cluster.
 	ClientCertificate *Secret
-}
 
-func (c Cluster) Visit(f func(Vertex)) {
-	f(c.Upstream)
+	// TimeoutPolicy specifies how to handle timeouts for this cluster.
+	TimeoutPolicy ClusterTimeoutPolicy
+
+	SlowStartConfig *SlowStartConfig
+
+	// MaxRequestsPerConnection defines the maximum number of requests per connection to the upstream before it is closed.
+	MaxRequestsPerConnection *uint32
+
+	// PerConnectionBufferLimitBytes defines the soft limit on size of the cluster’s new connection read and write buffers.
+	PerConnectionBufferLimitBytes *uint32
+
+	// UpstreamTLS contains the TLS version and cipher suite configurations for upstream connections
+	UpstreamTLS *UpstreamTLS
 }
 
 // WeightedService represents the load balancing weight of a
-// particular v1.Weighted port.
+// particular core_v1.Weighted port.
 type WeightedService struct {
 	// Weight is the integral load balancing weight.
 	Weight uint32
-	// ServiceName is the v1.Service name.
+	// ServiceName is the core_v1.Service name.
 	ServiceName string
-	// ServiceNamespace is the v1.Service namespace.
+	// ServiceNamespace is the core_v1.Service namespace.
 	ServiceNamespace string
 	// ServicePort is the port to which we forward traffic.
-	ServicePort v1.ServicePort
+	ServicePort core_v1.ServicePort
+	// HealthPort is the port for healthcheck.
+	HealthPort core_v1.ServicePort
 }
 
 // ServiceCluster capture the set of Kubernetes Services that will
@@ -771,17 +1118,13 @@ func (s *ServiceCluster) Validate() error {
 	return nil
 }
 
-func (s *ServiceCluster) Visit(func(Vertex)) {
-	// ServiceClusters are leaves in the DAG.
-}
-
 // AddService adds the given service with a default weight of 1.
-func (s *ServiceCluster) AddService(name types.NamespacedName, port v1.ServicePort) {
+func (s *ServiceCluster) AddService(name types.NamespacedName, port core_v1.ServicePort) {
 	s.AddWeightedService(1, name, port)
 }
 
 // AddWeightedService adds the given service with the given weight.
-func (s *ServiceCluster) AddWeightedService(weight uint32, name types.NamespacedName, port v1.ServicePort) {
+func (s *ServiceCluster) AddWeightedService(weight uint32, name types.NamespacedName, port core_v1.ServicePort) {
 	w := WeightedService{
 		Weight:           weight,
 		ServiceName:      name.Name,
@@ -813,12 +1156,14 @@ func (s *ServiceCluster) Rebalance() {
 // Secret represents a K8s Secret for TLS usage as a DAG Vertex. A Secret is
 // a leaf in the DAG.
 type Secret struct {
-	Object *v1.Secret
+	Object         *core_v1.Secret
+	ValidTLSSecret *SecretValidationStatus
+	ValidCASecret  *SecretValidationStatus
+	ValidCRLSecret *SecretValidationStatus
 }
 
-func (s *Secret) Name() string       { return s.Object.Name }
-func (s *Secret) Namespace() string  { return s.Object.Namespace }
-func (s *Secret) Visit(func(Vertex)) {}
+func (s *Secret) Name() string      { return s.Object.Name }
+func (s *Secret) Namespace() string { return s.Object.Namespace }
 
 // Data returns the contents of the backing secret's map.
 func (s *Secret) Data() map[string][]byte {
@@ -827,12 +1172,16 @@ func (s *Secret) Data() map[string][]byte {
 
 // Cert returns the secret's tls certificate
 func (s *Secret) Cert() []byte {
-	return s.Object.Data[v1.TLSCertKey]
+	return s.Object.Data[core_v1.TLSCertKey]
 }
 
 // PrivateKey returns the secret's tls private key
 func (s *Secret) PrivateKey() []byte {
-	return s.Object.Data[v1.TLSPrivateKeyKey]
+	return s.Object.Data[core_v1.TLSPrivateKeyKey]
+}
+
+type SecretValidationStatus struct {
+	Error error
 }
 
 // HTTPHealthCheckPolicy http health check policy
@@ -843,6 +1192,12 @@ type HTTPHealthCheckPolicy struct {
 	Timeout            time.Duration
 	UnhealthyThreshold uint32
 	HealthyThreshold   uint32
+	ExpectedStatuses   []HTTPStatusRange
+}
+
+type HTTPStatusRange struct {
+	Start int64
+	End   int64
 }
 
 // TCPHealthCheckPolicy tcp health check policy
@@ -872,8 +1227,11 @@ type ExtensionCluster struct {
 	// See https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#enum-config-cluster-v3-cluster-lbpolicy
 	LoadBalancerPolicy string
 
-	// TimeoutPolicy specifies how to handle timeouts to this extension.
-	TimeoutPolicy TimeoutPolicy
+	// RouteTimeoutPolicy specifies how to handle timeouts to this extension.
+	RouteTimeoutPolicy RouteTimeoutPolicy
+
+	// TimeoutPolicy specifies how to handle timeouts for this cluster.
+	ClusterTimeoutPolicy ClusterTimeoutPolicy
 
 	// SNI is used when a route proxies an upstream using TLS.
 	SNI string
@@ -881,10 +1239,70 @@ type ExtensionCluster struct {
 	// ClientCertificate is the optional identifier of the TLS secret containing client certificate and
 	// private key to be used when establishing TLS connection to upstream cluster.
 	ClientCertificate *Secret
+
+	// UpstreamTLS contains the TLS version and cipher suite configurations for upstream connections
+	UpstreamTLS *UpstreamTLS
+
+	// Circuit breaking limits
+	CircuitBreakers CircuitBreakers
 }
 
-// Visit processes extension clusters.
-func (e *ExtensionCluster) Visit(f func(Vertex)) {
-	// Emit the upstream ServiceCluster to the visitor.
-	f(&e.Upstream)
+const singleDNSLabelWildcardRegex = "^[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+
+var _ = regexp.MustCompile(singleDNSLabelWildcardRegex)
+
+const ignorePortRegex = "(:[0-9]+)?"
+
+var _ = regexp.MustCompile(ignorePortRegex)
+
+func wildcardDomainHeaderMatch(fqdn string) HeaderMatchCondition {
+	return HeaderMatchCondition{
+		// Internally Envoy uses the HTTP/2 ":authority" header in
+		// place of the HTTP/1 "host" header.
+		// See: https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#config-route-v3-headermatcher
+		Name:      ":authority",
+		MatchType: HeaderMatchTypeRegex,
+		Value:     singleDNSLabelWildcardRegex + regexp.QuoteMeta(fqdn[1:]) + ignorePortRegex,
+	}
+}
+
+// SlowStartConfig holds configuration for gradually increasing amount of traffic to a newly added endpoint.
+type SlowStartConfig struct {
+	Window           time.Duration
+	Aggression       float64
+	MinWeightPercent uint32
+}
+
+func (s *SlowStartConfig) String() string {
+	return fmt.Sprintf("%s%f%d", s.Window.String(), s.Aggression, s.MinWeightPercent)
+}
+
+// UpstreamTLS holds the TLS configuration for upstream connections
+type UpstreamTLS struct {
+	MinimumProtocolVersion string
+	MaximumProtocolVersion string
+	CipherSuites           []string
+}
+
+// CircuitBreakers holds configuration for circuit breakers.
+type CircuitBreakers struct {
+	// Max connections is maximum number of connections
+	// that Envoy will make to the upstream cluster.
+	MaxConnections uint32
+
+	// MaxPendingRequests is maximum number of pending
+	// requests that Envoy will allow to the upstream cluster.
+	MaxPendingRequests uint32
+
+	// MaxRequests is the maximum number of parallel requests that
+	// Envoy will make to the upstream cluster.
+	MaxRequests uint32
+
+	// MaxRetries is the maximum number of parallel retries that
+	// Envoy will allow to the upstream cluster.
+	MaxRetries uint32
+
+	// PerHostMaxConnections is the maximum number of connections
+	// that Envoy will allow to each individual host in a cluster.
+	PerHostMaxConnections uint32
 }

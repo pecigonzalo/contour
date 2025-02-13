@@ -19,13 +19,15 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/alecthomas/kingpin/v2"
+	"github.com/sirupsen/logrus"
+	core_v1 "k8s.io/api/core/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/client-go/kubernetes"
+
 	"github.com/projectcontour/contour/internal/certgen"
 	"github.com/projectcontour/contour/internal/k8s"
 	"github.com/projectcontour/contour/pkg/certs"
-	"github.com/sirupsen/logrus"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 // registercertgen registers the certgen subcommand and flags
@@ -33,26 +35,25 @@ import (
 func registerCertGen(app *kingpin.Application) (*kingpin.CmdClause, *certgenConfig) {
 	var certgenConfig certgenConfig
 	certgenApp := app.Command("certgen", "Generate new TLS certs for bootstrapping gRPC over TLS.")
+	certgenApp.Arg("outputdir", "Directory to write output files into (default \"certs\").").Default("certs").StringVar(&certgenConfig.OutputDir)
 
-	certgenApp.Flag("kube", "Apply the generated certs directly to the current Kubernetes cluster.").BoolVar(&certgenConfig.OutputKube)
-	certgenApp.Flag("yaml", "Render the generated certs as Kubernetes Secrets in YAML form to the current directory.").BoolVar(&certgenConfig.OutputYAML)
-	certgenApp.Flag("pem", "Render the generated certs as individual PEM files to the current directory.").BoolVar(&certgenConfig.OutputPEM)
-	certgenApp.Flag("incluster", "Use in cluster configuration.").BoolVar(&certgenConfig.InCluster)
-	certgenApp.Flag("kubeconfig", "Path to kubeconfig (if not in running inside a cluster).").Default(filepath.Join(os.Getenv("HOME"), ".kube", "config")).StringVar(&certgenConfig.KubeConfig)
-	certgenApp.Flag("namespace", "Kubernetes namespace, used for Kube objects.").Default(certs.DefaultNamespace).Envar("CONTOUR_NAMESPACE").StringVar(&certgenConfig.Namespace)
 	// NOTE: --certificate-lifetime can be used to accept Duration string once certificate rotation is supported.
 	certgenApp.Flag("certificate-lifetime", "Generated certificate lifetime (in days).").Default(strconv.Itoa(certs.DefaultCertificateLifetime)).UintVar(&certgenConfig.Lifetime)
+	certgenApp.Flag("incluster", "Use in cluster configuration.").BoolVar(&certgenConfig.InCluster)
+	certgenApp.Flag("kube", "Apply the generated certs directly to the current Kubernetes cluster.").BoolVar(&certgenConfig.OutputKube)
+	certgenApp.Flag("kubeconfig", "Path to kubeconfig (if not in running inside a cluster).").Default(filepath.Join(os.Getenv("HOME"), ".kube", "config")).StringVar(&certgenConfig.KubeConfig)
+	certgenApp.Flag("namespace", "Kubernetes namespace, used for Kube objects.").Default(certs.DefaultNamespace).Envar("CONTOUR_NAMESPACE").StringVar(&certgenConfig.Namespace)
 	certgenApp.Flag("overwrite", "Overwrite existing files or Secrets.").BoolVar(&certgenConfig.Overwrite)
+	certgenApp.Flag("pem", "Render the generated certs as individual PEM files to the current directory.").BoolVar(&certgenConfig.OutputPEM)
 	certgenApp.Flag("secrets-format", "Specify how to format the generated Kubernetes Secrets.").Default("legacy").StringVar(&certgenConfig.Format)
-
-	certgenApp.Arg("outputdir", "Directory to write output files into (default \"certs\").").Default("certs").StringVar(&certgenConfig.OutputDir)
+	certgenApp.Flag("secrets-name-suffix", "Specify a suffix to be appended to the generated Kubernetes secrets' names.").StringVar(&certgenConfig.NameSuffix)
+	certgenApp.Flag("yaml", "Render the generated certs as Kubernetes Secrets in YAML form to the current directory.").BoolVar(&certgenConfig.OutputYAML)
 
 	return certgenApp, &certgenConfig
 }
 
 // certgenConfig holds the configuration for the certificate generation process.
 type certgenConfig struct {
-
 	// KubeConfig is the path to the Kubeconfig file if we're not running in a cluster
 	KubeConfig string
 
@@ -82,11 +83,16 @@ type certgenConfig struct {
 
 	// Format specifies how to format the Kubernetes Secrets (must be "legacy" or "compat").
 	Format string
+
+	// NameSuffix specifies the suffix to use for the generated Kubernetes secrets' names.
+	NameSuffix string
 }
 
 // OutputCerts outputs the certs in certs as directed by config.
 func OutputCerts(config *certgenConfig, kubeclient *kubernetes.Clientset, certs *certs.Certificates) error {
-	secrets := []*corev1.Secret{}
+	var secrets []*core_v1.Secret
+	var errs []error
+
 	force := certgen.NoOverwrite
 	if config.Overwrite {
 		force = certgen.Overwrite
@@ -95,11 +101,15 @@ func OutputCerts(config *certgenConfig, kubeclient *kubernetes.Clientset, certs 
 	if config.OutputYAML || config.OutputKube {
 		switch config.Format {
 		case "legacy":
-			secrets = certgen.AsLegacySecrets(config.Namespace, certs)
+			secrets, errs = certgen.AsLegacySecrets(config.Namespace, config.NameSuffix, certs)
 		case "compact":
-			secrets = certgen.AsSecrets(config.Namespace, certs)
+			secrets, errs = certgen.AsSecrets(config.Namespace, config.NameSuffix, certs)
 		default:
 			return fmt.Errorf("unsupported Secrets format %q", config.Format)
+		}
+
+		if len(errs) > 0 {
+			return utilerrors.NewAggregate(errs)
 		}
 	}
 
@@ -136,13 +146,12 @@ func doCertgen(config *certgenConfig, log logrus.FieldLogger) {
 		log.WithError(err).Fatal("failed to generate certificates")
 	}
 
-	clients, err := k8s.NewClients(config.KubeConfig, config.InCluster)
+	coreClient, err := k8s.NewCoreClient(config.KubeConfig, config.InCluster)
 	if err != nil {
 		log.WithError(err).Fatalf("failed to create Kubernetes client")
 	}
 
-	if oerr := OutputCerts(config, clients.ClientSet(), generatedCerts); oerr != nil {
+	if oerr := OutputCerts(config, coreClient, generatedCerts); oerr != nil {
 		log.WithError(oerr).Fatalf("failed output certificates")
 	}
-
 }

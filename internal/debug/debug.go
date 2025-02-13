@@ -16,6 +16,7 @@
 package debug
 
 import (
+	"context"
 	"net/http"
 	"net/http/pprof"
 
@@ -30,12 +31,16 @@ type Service struct {
 	Builder *dag.Builder
 }
 
-// Start fulfills the g.Start contract.
-// When stop is closed the http server will shutdown.
-func (svc *Service) Start(stop <-chan struct{}) error {
+func (svc *Service) NeedLeaderElection() bool {
+	return false
+}
+
+// Implements controller-runtime Runnable interface.
+// When context is done, http server will shutdown.
+func (svc *Service) Start(ctx context.Context) error {
 	registerProfile(&svc.ServeMux)
 	registerDotWriter(&svc.ServeMux, svc.Builder)
-	return svc.Service.Start(stop)
+	return svc.Service.Start(ctx)
 }
 
 func registerProfile(mux *http.ServeMux) {
@@ -51,7 +56,7 @@ func registerProfile(mux *http.ServeMux) {
 }
 
 func registerDotWriter(mux *http.ServeMux, builder *dag.Builder) {
-	mux.HandleFunc("/debug/dag", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/debug/dag", func(w http.ResponseWriter, _ *http.Request) {
 		dw := &dotWriter{
 			Builder: builder,
 		}

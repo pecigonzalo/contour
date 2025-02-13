@@ -16,23 +16,24 @@ package v3
 import (
 	"testing"
 
-	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	envoy_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
-	"github.com/golang/protobuf/proto"
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_transport_socket_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"google.golang.org/protobuf/proto"
+	core_v1 "k8s.io/api/core/v1"
+	networking_v1 "k8s.io/api/networking/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/fixture"
 	"github.com/projectcontour/contour/internal/protobuf"
-	v1 "k8s.io/api/core/v1"
-	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 func TestSecretCacheContents(t *testing.T) {
 	tests := map[string]struct {
-		contents map[string]*envoy_tls_v3.Secret
+		contents map[string]*envoy_transport_socket_tls_v3.Secret
 		want     []proto.Message
 	}{
 		"empty": {
@@ -41,10 +42,10 @@ func TestSecretCacheContents(t *testing.T) {
 		},
 		"simple": {
 			contents: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			),
 			want: []proto.Message{
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			},
 		},
 	}
@@ -59,75 +60,31 @@ func TestSecretCacheContents(t *testing.T) {
 	}
 }
 
-func TestSecretCacheQuery(t *testing.T) {
-	tests := map[string]struct {
-		contents map[string]*envoy_tls_v3.Secret
-		query    []string
-		want     []proto.Message
-	}{
-		"exact match": {
-			contents: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
-			),
-			query: []string{"default/secret/68621186db"},
-			want: []proto.Message{
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
-			},
-		},
-		"partial match": {
-			contents: secretmap(
-				secret("default/secret-a/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
-				secret("default/secret-b/5397c67313", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY_2)),
-			),
-			query: []string{"default/secret/68621186db", "default/secret-b/5397c67313"},
-			want: []proto.Message{
-				secret("default/secret-b/5397c67313", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY_2)),
-			},
-		},
-		"no match": {
-			contents: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
-			),
-			query: []string{"default/secret-b/5397c67313"},
-			want:  nil,
-		},
-	}
-
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			var sc SecretCache
-			sc.Update(tc.contents)
-			got := sc.Query(tc.query)
-			protobuf.ExpectEqual(t, tc.want, got)
-		})
-	}
-}
-
 func TestSecretVisit(t *testing.T) {
 	tests := map[string]struct {
-		objs []interface{}
-		want map[string]*envoy_tls_v3.Secret
+		objs []any
+		want map[string]*envoy_transport_socket_tls_v3.Secret
 	}{
 		"nothing": {
 			objs: nil,
-			want: map[string]*envoy_tls_v3.Secret{},
+			want: map[string]*envoy_transport_socket_tls_v3.Secret{},
 		},
 		"unassociated secrets": {
-			objs: []interface{}{
+			objs: []any{
 				tlssecret("default", "secret-a", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 				tlssecret("default", "secret-b", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY_2)),
 			},
-			want: map[string]*envoy_tls_v3.Secret{},
+			want: map[string]*envoy_transport_socket_tls_v3.Secret{},
 		},
 		"simple ingress with secret": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "kuard",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       8080,
@@ -136,7 +93,7 @@ func TestSecretVisit(t *testing.T) {
 					},
 				},
 				&networking_v1.Ingress{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple",
 						Namespace: "default",
 					},
@@ -160,18 +117,18 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			},
 			want: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			),
 		},
 		"multiple ingresses with shared secret": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "kuard",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       8080,
@@ -180,7 +137,7 @@ func TestSecretVisit(t *testing.T) {
 					},
 				},
 				&networking_v1.Ingress{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-a",
 						Namespace: "default",
 					},
@@ -202,7 +159,7 @@ func TestSecretVisit(t *testing.T) {
 					},
 				},
 				&networking_v1.Ingress{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-b",
 						Namespace: "default",
 					},
@@ -226,18 +183,18 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			},
 			want: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			),
 		},
 		"multiple ingresses with different secrets": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "kuard",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       80,
@@ -246,7 +203,7 @@ func TestSecretVisit(t *testing.T) {
 					},
 				},
 				&networking_v1.Ingress{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-a",
 						Namespace: "default",
 					},
@@ -268,7 +225,7 @@ func TestSecretVisit(t *testing.T) {
 					},
 				},
 				&networking_v1.Ingress{
-					ObjectMeta: metav1.ObjectMeta{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-b",
 						Namespace: "default",
 					},
@@ -293,19 +250,19 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret-b", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY)),
 			},
 			want: secretmap(
-				secret("default/secret-a/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret-a/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 				secret("default/secret-b/5397c67313", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY)),
 			),
 		},
 		"simple httpproxy with secret": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "backend",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       80,
@@ -313,20 +270,20 @@ func TestSecretVisit(t *testing.T) {
 						}},
 					},
 				},
-				&contour_api_v1.HTTPProxy{
-					ObjectMeta: metav1.ObjectMeta{
+				&contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple",
 						Namespace: "default",
 					},
-					Spec: contour_api_v1.HTTPProxySpec{
-						VirtualHost: &contour_api_v1.VirtualHost{
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
 							Fqdn: "www.example.com",
-							TLS: &contour_api_v1.TLS{
+							TLS: &contour_v1.TLS{
 								SecretName: "secret",
 							},
 						},
-						Routes: []contour_api_v1.Route{{
-							Services: []contour_api_v1.Service{{
+						Routes: []contour_v1.Route{{
+							Services: []contour_v1.Service{{
 								Name: "backend",
 								Port: 80,
 							}},
@@ -336,18 +293,18 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			},
 			want: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			),
 		},
 		"multiple httpproxies with shared secret": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "backend",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       80,
@@ -355,40 +312,40 @@ func TestSecretVisit(t *testing.T) {
 						}},
 					},
 				},
-				&contour_api_v1.HTTPProxy{
-					ObjectMeta: metav1.ObjectMeta{
+				&contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-a",
 						Namespace: "default",
 					},
-					Spec: contour_api_v1.HTTPProxySpec{
-						VirtualHost: &contour_api_v1.VirtualHost{
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
 							Fqdn: "www1.example.com",
-							TLS: &contour_api_v1.TLS{
+							TLS: &contour_v1.TLS{
 								SecretName: "secret",
 							},
 						},
-						Routes: []contour_api_v1.Route{{
-							Services: []contour_api_v1.Service{{
+						Routes: []contour_v1.Route{{
+							Services: []contour_v1.Service{{
 								Name: "backend",
 								Port: 80,
 							}},
 						}},
 					},
 				},
-				&contour_api_v1.HTTPProxy{
-					ObjectMeta: metav1.ObjectMeta{
+				&contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-b",
 						Namespace: "default",
 					},
-					Spec: contour_api_v1.HTTPProxySpec{
-						VirtualHost: &contour_api_v1.VirtualHost{
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
 							Fqdn: "www2.example.com",
-							TLS: &contour_api_v1.TLS{
+							TLS: &contour_v1.TLS{
 								SecretName: "secret",
 							},
 						},
-						Routes: []contour_api_v1.Route{{
-							Services: []contour_api_v1.Service{{
+						Routes: []contour_v1.Route{{
+							Services: []contour_v1.Service{{
 								Name: "backend",
 								Port: 80,
 							}},
@@ -398,18 +355,18 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			},
 			want: secretmap(
-				secret("default/secret/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 			),
 		},
 		"multiple httpproxies with different secret": {
-			objs: []interface{}{
-				&v1.Service{
-					ObjectMeta: metav1.ObjectMeta{
+			objs: []any{
+				&core_v1.Service{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "backend",
 						Namespace: "default",
 					},
-					Spec: v1.ServiceSpec{
-						Ports: []v1.ServicePort{{
+					Spec: core_v1.ServiceSpec{
+						Ports: []core_v1.ServicePort{{
 							Name:       "http",
 							Protocol:   "TCP",
 							Port:       80,
@@ -417,40 +374,40 @@ func TestSecretVisit(t *testing.T) {
 						}},
 					},
 				},
-				&contour_api_v1.HTTPProxy{
-					ObjectMeta: metav1.ObjectMeta{
+				&contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-a",
 						Namespace: "default",
 					},
-					Spec: contour_api_v1.HTTPProxySpec{
-						VirtualHost: &contour_api_v1.VirtualHost{
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
 							Fqdn: "www1.example.com",
-							TLS: &contour_api_v1.TLS{
+							TLS: &contour_v1.TLS{
 								SecretName: "secret-a",
 							},
 						},
-						Routes: []contour_api_v1.Route{{
-							Services: []contour_api_v1.Service{{
+						Routes: []contour_v1.Route{{
+							Services: []contour_v1.Service{{
 								Name: "backend",
 								Port: 80,
 							}},
 						}},
 					},
 				},
-				&contour_api_v1.HTTPProxy{
-					ObjectMeta: metav1.ObjectMeta{
+				&contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
 						Name:      "simple-b",
 						Namespace: "default",
 					},
-					Spec: contour_api_v1.HTTPProxySpec{
-						VirtualHost: &contour_api_v1.VirtualHost{
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
 							Fqdn: "www2.example.com",
-							TLS: &contour_api_v1.TLS{
+							TLS: &contour_v1.TLS{
 								SecretName: "secret-b",
 							},
 						},
-						Routes: []contour_api_v1.Route{{
-							Services: []contour_api_v1.Service{{
+						Routes: []contour_v1.Route{{
+							Services: []contour_v1.Service{{
 								Name: "backend",
 								Port: 80,
 							}},
@@ -461,7 +418,7 @@ func TestSecretVisit(t *testing.T) {
 				tlssecret("default", "secret-b", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY_2)),
 			},
 			want: secretmap(
-				secret("default/secret-a/68621186db", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
+				secret("default/secret-a/0567f551af", secretdata(CERTIFICATE, RSA_PRIVATE_KEY)),
 				secret("default/secret-b/5397c67313", secretdata(CERTIFICATE_2, RSA_PRIVATE_KEY_2)),
 			),
 		},
@@ -469,25 +426,25 @@ func TestSecretVisit(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			root := buildDAG(t, tc.objs...)
-			got := visitSecrets(root)
-			protobuf.ExpectEqual(t, tc.want, got)
+			var sc SecretCache
+			sc.OnChange(buildDAG(t, tc.objs...))
+			protobuf.ExpectEqual(t, tc.want, sc.values)
 		})
 	}
 }
 
 // buildDAG produces a dag.DAG from the supplied objects.
-func buildDAG(t *testing.T, objs ...interface{}) *dag.DAG {
+func buildDAG(t *testing.T, objs ...any) *dag.DAG {
 	builder := dag.Builder{
 		Source: dag.KubernetesCache{
 			FieldLogger: fixture.NewTestLogger(t),
 		},
 		Processors: []dag.Processor{
+			&dag.ListenerProcessor{},
 			&dag.IngressProcessor{
 				FieldLogger: fixture.NewTestLogger(t),
 			},
 			&dag.HTTPProxyProcessor{},
-			&dag.ListenerProcessor{},
 		},
 	}
 
@@ -498,19 +455,25 @@ func buildDAG(t *testing.T, objs ...interface{}) *dag.DAG {
 }
 
 // buildDAGFallback produces a dag.DAG from the supplied objects with a fallback cert configured.
-func buildDAGFallback(t *testing.T, fallbackCertificate *types.NamespacedName, objs ...interface{}) *dag.DAG {
+func buildDAGFallback(t *testing.T, fallbackCertificate *types.NamespacedName, objs ...any) *dag.DAG {
 	builder := dag.Builder{
 		Source: dag.KubernetesCache{
 			FieldLogger: fixture.NewTestLogger(t),
 		},
 		Processors: []dag.Processor{
+			&dag.ExtensionServiceProcessor{},
+			&dag.ListenerProcessor{
+				HTTPAddress:  "0.0.0.0",
+				HTTPPort:     8080,
+				HTTPSAddress: "0.0.0.0",
+				HTTPSPort:    8443,
+			},
 			&dag.IngressProcessor{
 				FieldLogger: fixture.NewTestLogger(t),
 			},
 			&dag.HTTPProxyProcessor{
 				FallbackCertificate: fallbackCertificate,
 			},
-			&dag.ListenerProcessor{},
 		},
 	}
 	for _, o := range objs {
@@ -519,27 +482,27 @@ func buildDAGFallback(t *testing.T, fallbackCertificate *types.NamespacedName, o
 	return builder.Build()
 }
 
-func secretmap(secrets ...*envoy_tls_v3.Secret) map[string]*envoy_tls_v3.Secret {
-	m := make(map[string]*envoy_tls_v3.Secret)
+func secretmap(secrets ...*envoy_transport_socket_tls_v3.Secret) map[string]*envoy_transport_socket_tls_v3.Secret {
+	m := make(map[string]*envoy_transport_socket_tls_v3.Secret)
 	for _, s := range secrets {
 		m[s.Name] = s
 	}
 	return m
 }
 
-func secret(name string, data map[string][]byte) *envoy_tls_v3.Secret {
-	return &envoy_tls_v3.Secret{
+func secret(name string, data map[string][]byte) *envoy_transport_socket_tls_v3.Secret {
+	return &envoy_transport_socket_tls_v3.Secret{
 		Name: name,
-		Type: &envoy_tls_v3.Secret_TlsCertificate{
-			TlsCertificate: &envoy_tls_v3.TlsCertificate{
-				CertificateChain: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_InlineBytes{
-						InlineBytes: data[v1.TLSCertKey],
+		Type: &envoy_transport_socket_tls_v3.Secret_TlsCertificate{
+			TlsCertificate: &envoy_transport_socket_tls_v3.TlsCertificate{
+				CertificateChain: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_InlineBytes{
+						InlineBytes: data[core_v1.TLSCertKey],
 					},
 				},
-				PrivateKey: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_InlineBytes{
-						InlineBytes: data[v1.TLSPrivateKeyKey],
+				PrivateKey: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_InlineBytes{
+						InlineBytes: data[core_v1.TLSPrivateKeyKey],
 					},
 				},
 			},
@@ -547,14 +510,14 @@ func secret(name string, data map[string][]byte) *envoy_tls_v3.Secret {
 	}
 }
 
-// tlssecert creates a new v1.Secret object of type kubernetes.io/tls.
-func tlssecret(namespace, name string, data map[string][]byte) *v1.Secret {
-	return &v1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
+// tlssecert creates a new(core_v1.Secret object of type kubernetes.io/tls.
+func tlssecret(namespace, name string, data map[string][]byte) *core_v1.Secret {
+	return &core_v1.Secret{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Type: v1.SecretTypeTLS,
+		Type: core_v1.SecretTypeTLS,
 		Data: data,
 	}
 }
@@ -568,55 +531,57 @@ func backend(name string, port int32) *networking_v1.IngressBackend {
 	}
 }
 
-// nolint:revive
+// nolint:revive,gosec
 const (
-	// generated by https://www.selfsignedcertificate.com
+	// CERTIFICATE generated by
+	// openssl genrsa -out example-key.pem 2048
+	// openssl req -new -x509 -days 18250 -key example-key.pem -sha256 -subj "/CN=www.example.com" -out example.pem
 	CERTIFICATE = `-----BEGIN CERTIFICATE-----
-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
+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
+CY2iW9j8VptZU8LVs9FrhgecEtfXbTA3MeSo
 -----END CERTIFICATE-----`
 
 	RSA_PRIVATE_KEY = `-----BEGIN RSA PRIVATE KEY-----
-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
+MIIEowIBAAKCAQEA0vUuHf3musKoom/FHshzKbaJLMPqtgzbhe+TUBy4eWdq1JxP
+zfPylYaSMfNUHSHdZmlktG99/doQkURWN7A5TKUZP9bqEIMy3ZPKY8NSYqqA6b04
+imbAA5lblHAnRyzRM2LXC1gb9FcsjchOaXa51ZzG8cNWokPMNpXAQiUPGOAwHOaC
+pbwbuPWlLL3xWcIy+gq9amn0ImMpakHM+86hgWI13IjMzfuHxNV0JcNYsul5lWYh
+0K/Em+xASPoNIiWqYDb+7Qbp88sErwGCvDeNkEDpZdbChFX+7YaDRJiUyFBaOpue
+xcrOy0PwfIp+ScAVPtRY6jViydRo/syHPd6HNwIDAQABAoIBAEf36RHGSu6v9gPk
+iaUk0VULtuSUuf/9hu68es873Rtd0q5R3U/vx3SHglyUHMALi5Kipf6AgsUVnc1R
+OPCqqAGj2WdUFGopuDKrdsJuIi8S6APVz/I3d45CxWFwmZXIjl4vfBmcp3zGOKbu
+DQIhxOhBIgXclDOrWYHNuNdX+TyMr9cBe9bPtsWmN6Wl8V26kLzboQ3bIsM9taL+
+sizVNrLL4U7oqbsKVhmI1m78+VaucQeK+XuyvuT6toOxY/Mgidcp4Mwq06aOTFug
+N/u+VyXNen3Vk6/kMTxbaM9aQ05cnOrKqrgJAhiFGb+lcqvvGlwGxNqGcBABYkqf
+ejhNdEECgYEA/3shOSl4GmEGZZXTARo0bDnelSpSJgmlStBeAGraq+lm/4IrTCCB
+2tmJkEs6uiCEH7vkbbI/lLlhNjM2gKDovP3UwTQHGfiHlcIYYICMIpbp7+Ar9+ex
+4KPXmgqqhTKC4xQYGoUE6INlpZcQ4blA4AtQbhgcC4Cp8FD/QbXp0xECgYEA02Ll
+EAxzHZBNoK/5oPL0LiDUW/zPdOWCQCW8oGW5gDUvCLQ/lntegL8Qzubt7PZ4xgeg
+m2ENTDcp1Zfn9s0T1V2T9Sba8gShUCvm9nLVCj4OQ3lwDufwHFuhKFpj1BVnHD5y
+9yhXfyrFgvhamepEjq6LZUCrL1HxZqgOezv6JccCgYBqM1oFNArcFFcfZV+YRrdi
+AdBX+4a4jyvp5KIe1ExgSB7rucWb2KuCOQmpNMyN0LR7qJR1UTKC9WjGqhVO9RSq
+c228fo8xKZHbHBscCnO2cTt/3pUIcYUM167pNuPZiLzF/nVimMcIjI51fk2jN2oT
+eECP82+9DFgYMONbAm7XsQKBgH/Y3ztenDz0Ks8Vv3/FkUNY3bco5vwHV0ieyj+k
+ZpYRFHpKMe88fEKXzH2mk53uz8rNkCiJgTZoYqfpcQUGsYkpSLRLpL4daMcJVm4V
+s523PH84sjqBsuojzQuP57K8oxkk9/ld79VctAprVLikRISbMnmxrBc5kywIVoHY
+G4m/AoGBAPV0wuytURR3CbPHz28wrKRh/xnHrW+Fp3ooRfj8Pr/4zDVsqqNz2gA3
+yVb6kAEpg2ON9NOWSfoUfC+THitOnRm8pKL1QL7oiq/2+s3IiK+jSevEU7TUfjio
+1LwtUqv1MbKdv7TgkU0YQ99iLocWF4F4oWF6AX86/BL9y7gcbE0y
 -----END RSA PRIVATE KEY-----`
 
 	CERTIFICATE_2 = `-----BEGIN CERTIFICATE-----
@@ -670,7 +635,7 @@ s9pb3b/IYa6Tnxo6cPdhwZ3CrLlq/1IopES1SmvaS4dgMFmf/0vk
 
 func secretdata(cert, key string) map[string][]byte {
 	return map[string][]byte{
-		v1.TLSCertKey:       []byte(cert),
-		v1.TLSPrivateKeyKey: []byte(key),
+		core_v1.TLSCertKey:       []byte(cert),
+		core_v1.TLSPrivateKeyKey: []byte(key),
 	}
 }

@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package httpproxy
 
@@ -20,12 +19,14 @@ import (
 	"context"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	core_v1 "k8s.io/api/core/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 func testExternalNameServiceInsecure(namespace string) {
@@ -34,15 +35,15 @@ func testExternalNameServiceInsecure(namespace string) {
 
 		f.Fixtures.Echo.Deploy(namespace, "ingress-conformance-echo")
 
-		externalNameService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
+		externalNameService := &core_v1.Service{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-service",
 			},
-			Spec: corev1.ServiceSpec{
-				Type:         corev1.ServiceTypeExternalName,
+			Spec: core_v1.ServiceSpec{
+				Type:         core_v1.ServiceTypeExternalName,
 				ExternalName: "ingress-conformance-echo." + namespace,
-				Ports: []corev1.ServicePort{
+				Ports: []core_v1.ServicePort{
 					{
 						Name: "http",
 						Port: 80,
@@ -52,25 +53,25 @@ func testExternalNameServiceInsecure(namespace string) {
 		}
 		require.NoError(t, f.Client.Create(context.TODO(), externalNameService))
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-proxy",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "externalnameservice.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: externalNameService.Name,
 								Port: 80,
 							},
 						},
-						RequestHeadersPolicy: &contourv1.HeadersPolicy{
-							Set: []contourv1.HeaderValue{
+						RequestHeadersPolicy: &contour_v1.HeadersPolicy{
+							Set: []contour_v1.HeaderValue{
 								{
 									Name:  "Host",
 									Value: externalNameService.Spec.ExternalName,
@@ -81,10 +82,7 @@ func testExternalNameServiceInsecure(namespace string) {
 				},
 			},
 		}
-		proxy, ok := f.CreateHTTPProxyAndWaitFor(p, httpProxyValid)
-		if !ok {
-			t.Fatalf("The HTTPProxy did not become valid, here are the Valid condition's Errors: %s", httpProxyErrors(proxy))
-		}
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(p, e2e.HTTPProxyValid))
 
 		res, ok := f.HTTP.RequestUntil(&e2e.HTTPRequestOpts{
 			Host:      p.Spec.VirtualHost.Fqdn,
@@ -101,47 +99,47 @@ func testExternalNameServiceTLS(namespace string) {
 
 		f.Certs.CreateSelfSignedCert(namespace, "backend-server-cert", "backend-server-cert", "echo")
 
-		f.Fixtures.EchoSecure.Deploy(namespace, "echo-tls")
+		f.Fixtures.EchoSecure.Deploy(namespace, "echo-tls", nil)
 
-		externalNameService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
+		externalNameService := &core_v1.Service{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-service-tls",
 			},
-			Spec: corev1.ServiceSpec{
-				Type:         corev1.ServiceTypeExternalName,
+			Spec: core_v1.ServiceSpec{
+				Type:         core_v1.ServiceTypeExternalName,
 				ExternalName: "echo-tls." + namespace,
-				Ports: []corev1.ServicePort{
+				Ports: []core_v1.ServicePort{
 					{
 						Name:     "https",
 						Port:     443,
-						Protocol: corev1.ProtocolTCP,
+						Protocol: core_v1.ProtocolTCP,
 					},
 				},
 			},
 		}
 		require.NoError(t, f.Client.Create(context.TODO(), externalNameService))
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-proxy-tls",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "tls.externalnameservice.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name:     externalNameService.Name,
 								Port:     443,
-								Protocol: stringPtr("tls"),
+								Protocol: ptr.To("tls"),
 							},
 						},
-						RequestHeadersPolicy: &contourv1.HeadersPolicy{
-							Set: []contourv1.HeaderValue{
+						RequestHeadersPolicy: &contour_v1.HeadersPolicy{
+							Set: []contour_v1.HeaderValue{
 								{
 									Name:  "Host",
 									Value: externalNameService.Spec.ExternalName,
@@ -152,10 +150,7 @@ func testExternalNameServiceTLS(namespace string) {
 				},
 			},
 		}
-		proxy, ok := f.CreateHTTPProxyAndWaitFor(p, httpProxyValid)
-		if !ok {
-			t.Fatalf("The HTTPProxy did not become valid, here are the Valid condition's Errors: %s", httpProxyErrors(proxy))
-		}
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(p, e2e.HTTPProxyValid))
 
 		res, ok := f.HTTP.RequestUntil(&e2e.HTTPRequestOpts{
 			Host:      p.Spec.VirtualHost.Fqdn,
@@ -166,27 +161,23 @@ func testExternalNameServiceTLS(namespace string) {
 	})
 }
 
-func stringPtr(s string) *string {
-	return &s
-}
-
 func testExternalNameServiceLocalhostInvalid(namespace string) {
 	Specify("external name services with localhost are rejected", func() {
 		t := f.T()
 
 		f.Fixtures.Echo.Deploy(namespace, "ingress-conformance-echo")
 
-		externalNameService := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
+		externalNameService := &core_v1.Service{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-service-localhost",
 			},
-			Spec: corev1.ServiceSpec{
-				Type: corev1.ServiceTypeExternalName,
+			Spec: core_v1.ServiceSpec{
+				Type: core_v1.ServiceTypeExternalName,
 				// The unit tests test just `localhost`, so test another item from that
 				// list.
 				ExternalName: "localhost.localdomain",
-				Ports: []corev1.ServicePort{
+				Ports: []core_v1.ServicePort{
 					{
 						Name: "http",
 						Port: 80,
@@ -196,25 +187,25 @@ func testExternalNameServiceLocalhostInvalid(namespace string) {
 		}
 		require.NoError(t, f.Client.Create(context.TODO(), externalNameService))
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "external-name-proxy",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "externalnameservice.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: externalNameService.Name,
 								Port: 80,
 							},
 						},
-						RequestHeadersPolicy: &contourv1.HeadersPolicy{
-							Set: []contourv1.HeaderValue{
+						RequestHeadersPolicy: &contour_v1.HeadersPolicy{
+							Set: []contour_v1.HeaderValue{
 								{
 									Name:  "Host",
 									Value: externalNameService.Spec.ExternalName,
@@ -228,17 +219,17 @@ func testExternalNameServiceLocalhostInvalid(namespace string) {
 
 		// The HTTPProxy should be marked invalid due to the service
 		// using localhost.localdomain.
-		_, invalid := f.CreateHTTPProxyAndWaitFor(p, func(proxy *contourv1.HTTPProxy) bool {
-			validCond := proxy.Status.GetConditionFor(contourv1.ValidConditionType)
+		require.Truef(f.T(), f.CreateHTTPProxyAndWaitFor(p, func(proxy *contour_v1.HTTPProxy) bool {
+			validCond := proxy.Status.GetConditionFor(contour_v1.ValidConditionType)
 			if validCond == nil {
 				return false
 			}
-			if validCond.Status != metav1.ConditionFalse {
+			if validCond.Status != meta_v1.ConditionFalse {
 				return false
 			}
 
 			for _, err := range validCond.Errors {
-				if err.Type == contourv1.ConditionTypeServiceError &&
+				if err.Type == contour_v1.ConditionTypeServiceError &&
 					err.Reason == "ServiceUnresolvedReference" &&
 					strings.Contains(err.Message, "is an ExternalName service that points to localhost") {
 					return true
@@ -246,7 +237,6 @@ func testExternalNameServiceLocalhostInvalid(namespace string) {
 			}
 
 			return false
-		})
-		require.Truef(t, invalid, "ExternalName with hostname %s was accepted by Contour.", externalNameService.Spec.ExternalName)
+		}), "ExternalName with hostname %s was accepted by Contour.", externalNameService.Spec.ExternalName)
 	})
 }

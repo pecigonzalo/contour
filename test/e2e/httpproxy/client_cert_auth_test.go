@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package httpproxy
 
@@ -21,14 +20,15 @@ import (
 	"crypto/tls"
 	"strings"
 
-	certmanagerv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
-	certmanagermetav1 "github.com/jetstack/cert-manager/pkg/apis/meta/v1"
-	. "github.com/onsi/ginkgo"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/test/e2e"
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	certmanagermetav1 "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 func testClientCertAuth(namespace string) {
@@ -37,7 +37,7 @@ func testClientCertAuth(namespace string) {
 
 		// Create a self-signed Issuer.
 		selfSignedIssuer := &certmanagerv1.Issuer{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "selfsigned",
 			},
@@ -52,7 +52,7 @@ func testClientCertAuth(namespace string) {
 		// Using the selfsigned issuer, create a CA signing certificate for the
 		// test issuer.
 		caSigningCert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "ca-projectcontour-io",
 			},
@@ -81,7 +81,7 @@ func testClientCertAuth(namespace string) {
 		// Create a local CA issuer with the CA certificate that the selfsigned
 		// issuer gave us.
 		localCAIssuer := &certmanagerv1.Issuer{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "ca-projectcontour-io",
 			},
@@ -98,7 +98,7 @@ func testClientCertAuth(namespace string) {
 		// Using the selfsigned issuer, create a CA signing certificate for another
 		// test issuer.
 		caSigningCert2 := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "ca-notprojectcontour-io",
 			},
@@ -127,7 +127,7 @@ func testClientCertAuth(namespace string) {
 		// Create a local CA issuer with the CA certificate that the selfsigned
 		// issuer gave us.
 		localCAIssuer2 := &certmanagerv1.Issuer{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "ca-notprojectcontour-io",
 			},
@@ -145,12 +145,11 @@ func testClientCertAuth(namespace string) {
 
 		// Get a server certificate for echo-no-auth.
 		echoNoAuthCert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-no-auth-cert",
 			},
 			Spec: certmanagerv1.CertificateSpec{
-
 				Usages: []certmanagerv1.KeyUsage{
 					certmanagerv1.UsageServerAuth,
 				},
@@ -167,7 +166,7 @@ func testClientCertAuth(namespace string) {
 
 		// Get a server certificate for echo-with-auth.
 		echoWithAuthCert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth-cert",
 			},
@@ -188,12 +187,11 @@ func testClientCertAuth(namespace string) {
 
 		// Get a server certificate for echo-with-auth-skip-verify.
 		echoWithAuthSkipVerifyCert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth-skip-verify-cert",
 			},
 			Spec: certmanagerv1.CertificateSpec{
-
 				Usages: []certmanagerv1.KeyUsage{
 					certmanagerv1.UsageServerAuth,
 				},
@@ -210,12 +208,11 @@ func testClientCertAuth(namespace string) {
 
 		// Get a server certificate for echo-with-auth-skip-verify-with-ca.
 		echoWithAuthSkipVerifyWithCACert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth-skip-verify-with-ca-cert",
 			},
 			Spec: certmanagerv1.CertificateSpec{
-
 				Usages: []certmanagerv1.KeyUsage{
 					certmanagerv1.UsageServerAuth,
 				},
@@ -228,9 +225,51 @@ func testClientCertAuth(namespace string) {
 		}
 		require.NoError(t, f.Client.Create(context.TODO(), echoWithAuthSkipVerifyWithCACert))
 
+		f.Fixtures.Echo.Deploy(namespace, "echo-with-optional-auth")
+
+		// Get a server certificate for echo-with-optional-auth.
+		echoWithOptionalAuth := &certmanagerv1.Certificate{
+			ObjectMeta: meta_v1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "echo-with-optional-auth-cert",
+			},
+			Spec: certmanagerv1.CertificateSpec{
+				Usages: []certmanagerv1.KeyUsage{
+					certmanagerv1.UsageServerAuth,
+				},
+				DNSNames:   []string{"echo-with-optional-auth.projectcontour.io"},
+				SecretName: "echo-with-optional-auth",
+				IssuerRef: certmanagermetav1.ObjectReference{
+					Name: "ca-projectcontour-io",
+				},
+			},
+		}
+		require.NoError(t, f.Client.Create(context.TODO(), echoWithOptionalAuth))
+
+		f.Fixtures.Echo.Deploy(namespace, "echo-with-optional-auth-no-ca")
+
+		// Get a server certificate for echo-with-optional-auth-no-ca.
+		echoWithOptionalAuthNoCA := &certmanagerv1.Certificate{
+			ObjectMeta: meta_v1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "echo-with-optional-auth-no-ca-cert",
+			},
+			Spec: certmanagerv1.CertificateSpec{
+				Usages: []certmanagerv1.KeyUsage{
+					certmanagerv1.UsageServerAuth,
+				},
+				DNSNames:   []string{"echo-with-optional-auth-no-ca.projectcontour.io"},
+				SecretName: "echo-with-optional-auth-no-ca",
+				IssuerRef: certmanagermetav1.ObjectReference{
+					Name: "ca-projectcontour-io",
+				},
+			},
+		}
+		require.NoError(t, f.Client.Create(context.TODO(), echoWithOptionalAuthNoCA))
+
 		// Get a client certificate.
 		clientCert := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-client-cert",
 			},
@@ -250,11 +289,11 @@ func testClientCertAuth(namespace string) {
 		}
 		// Wait for the Cert to be ready since we'll directly download
 		// the secret contents for use as a client cert later on.
-		f.Certs.CreateCertAndWaitFor(clientCert, certIsReady)
+		require.True(f.T(), f.Certs.CreateCertAndWaitFor(clientCert, certIsReady))
 
 		// Get another client certificate.
 		clientCertInvalid := &certmanagerv1.Certificate{
-			ObjectMeta: metav1.ObjectMeta{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-client-cert-invalid",
 			},
@@ -274,24 +313,24 @@ func testClientCertAuth(namespace string) {
 		}
 		// Wait for the Cert to be ready since we'll directly download
 		// the secret contents for use as a client cert later on.
-		f.Certs.CreateCertAndWaitFor(clientCertInvalid, certIsReady)
+		require.True(f.T(), f.Certs.CreateCertAndWaitFor(clientCertInvalid, certIsReady))
 
 		// This proxy does not require client certificate auth.
-		noAuthProxy := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		noAuthProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-no-auth",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "echo-no-auth.projectcontour.io",
-					TLS: &contourv1.TLS{
+					TLS: &contour_v1.TLS{
 						SecretName: "echo-no-auth",
 					},
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo-no-auth",
 								Port: 80,
@@ -301,27 +340,27 @@ func testClientCertAuth(namespace string) {
 				},
 			},
 		}
-		f.CreateHTTPProxyAndWaitFor(noAuthProxy, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(noAuthProxy, e2e.HTTPProxyValid))
 
 		// This proxy requires client certificate auth.
-		authProxy := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		authProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "echo-with-auth.projectcontour.io",
-					TLS: &contourv1.TLS{
+					TLS: &contour_v1.TLS{
 						SecretName: "echo-with-auth",
-						ClientValidation: &contourv1.DownstreamValidation{
+						ClientValidation: &contour_v1.DownstreamValidation{
 							CACertificate: "echo-with-auth",
 						},
 					},
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo-with-auth",
 								Port: 80,
@@ -331,27 +370,27 @@ func testClientCertAuth(namespace string) {
 				},
 			},
 		}
-		f.CreateHTTPProxyAndWaitFor(authProxy, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(authProxy, e2e.HTTPProxyValid))
 
 		// This proxy does not verify client certs.
-		authSkipVerifyProxy := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		authSkipVerifyProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth-skip-verify",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "echo-with-auth-skip-verify.projectcontour.io",
-					TLS: &contourv1.TLS{
+					TLS: &contour_v1.TLS{
 						SecretName: "echo-with-auth-skip-verify",
-						ClientValidation: &contourv1.DownstreamValidation{
+						ClientValidation: &contour_v1.DownstreamValidation{
 							SkipClientCertValidation: true,
 						},
 					},
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo-with-auth-skip-verify",
 								Port: 80,
@@ -361,28 +400,28 @@ func testClientCertAuth(namespace string) {
 				},
 			},
 		}
-		f.CreateHTTPProxyAndWaitFor(authSkipVerifyProxy, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(authSkipVerifyProxy, e2e.HTTPProxyValid))
 
 		// This proxy requires a client certificate but does not verify it.
-		authSkipVerifyWithCAProxy := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		authSkipVerifyWithCAProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "echo-with-auth-skip-verify-with-ca",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "echo-with-auth-skip-verify-with-ca.projectcontour.io",
-					TLS: &contourv1.TLS{
+					TLS: &contour_v1.TLS{
 						SecretName: "echo-with-auth-skip-verify-with-ca",
-						ClientValidation: &contourv1.DownstreamValidation{
+						ClientValidation: &contour_v1.DownstreamValidation{
 							SkipClientCertValidation: true,
 							CACertificate:            "echo-with-auth",
 						},
 					},
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo-with-auth-skip-verify-with-ca",
 								Port: 80,
@@ -392,11 +431,73 @@ func testClientCertAuth(namespace string) {
 				},
 			},
 		}
-		f.CreateHTTPProxyAndWaitFor(authSkipVerifyWithCAProxy, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(authSkipVerifyWithCAProxy, e2e.HTTPProxyValid))
+
+		// This proxy requests a client certificate but only verifies it if sent.
+		optionalAuthProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "echo-with-optional-auth",
+			},
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
+					Fqdn: "echo-with-optional-auth.projectcontour.io",
+					TLS: &contour_v1.TLS{
+						SecretName: "echo-with-optional-auth",
+						ClientValidation: &contour_v1.DownstreamValidation{
+							OptionalClientCertificate: true,
+							CACertificate:             "echo-with-auth",
+						},
+					},
+				},
+				Routes: []contour_v1.Route{
+					{
+						Services: []contour_v1.Service{
+							{
+								Name: "echo-with-optional-auth",
+								Port: 80,
+							},
+						},
+					},
+				},
+			},
+		}
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(optionalAuthProxy, e2e.HTTPProxyValid))
+
+		// This proxy requests a client certificate but doesn't verify it if sent.
+		optionalAuthNoCAProxy := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "echo-with-optional-auth-no-ca",
+			},
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
+					Fqdn: "echo-with-optional-auth-no-ca.projectcontour.io",
+					TLS: &contour_v1.TLS{
+						SecretName: "echo-with-optional-auth-no-ca",
+						ClientValidation: &contour_v1.DownstreamValidation{
+							OptionalClientCertificate: true,
+							SkipClientCertValidation:  true,
+						},
+					},
+				},
+				Routes: []contour_v1.Route{
+					{
+						Services: []contour_v1.Service{
+							{
+								Name: "echo-with-optional-auth-no-ca",
+								Port: 80,
+							},
+						},
+					},
+				},
+			},
+		}
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(optionalAuthNoCAProxy, e2e.HTTPProxyValid))
 
 		// get the valid & invalid client certs
-		validClientCert := f.Certs.GetTLSCertificate(namespace, clientCert.Spec.SecretName)
-		invalidClientCert := f.Certs.GetTLSCertificate(namespace, clientCertInvalid.Spec.SecretName)
+		validClientCert, _ := f.Certs.GetTLSCertificate(namespace, clientCert.Spec.SecretName)
+		invalidClientCert, _ := f.Certs.GetTLSCertificate(namespace, clientCertInvalid.Spec.SecretName)
 
 		cases := map[string]struct {
 			host       string
@@ -463,6 +564,37 @@ func testClientCertAuth(namespace string) {
 			},
 			"echo-with-auth-skip-verify-with-ca with echo-client-cert-invalid should succeed": {
 				host:       authSkipVerifyWithCAProxy.Spec.VirtualHost.Fqdn,
+				clientCert: &invalidClientCert,
+				wantErr:    "",
+			},
+
+			"echo-with-optional-auth without a client cert should succeed": {
+				host:       optionalAuthProxy.Spec.VirtualHost.Fqdn,
+				clientCert: nil,
+				wantErr:    "",
+			},
+			"echo-with-optional-auth with echo-client-cert should succeed": {
+				host:       optionalAuthProxy.Spec.VirtualHost.Fqdn,
+				clientCert: &validClientCert,
+				wantErr:    "",
+			},
+			"echo-with-optional-auth with echo-client-cert-invalid should error": {
+				host:       optionalAuthProxy.Spec.VirtualHost.Fqdn,
+				clientCert: &invalidClientCert,
+				wantErr:    "tls: unknown certificate authority",
+			},
+			"echo-with-optional-auth-no-ca without a client cert should succeed": {
+				host:       optionalAuthNoCAProxy.Spec.VirtualHost.Fqdn,
+				clientCert: nil,
+				wantErr:    "",
+			},
+			"echo-with-optional-auth-no-ca with echo-client-cert should succeed": {
+				host:       optionalAuthNoCAProxy.Spec.VirtualHost.Fqdn,
+				clientCert: &validClientCert,
+				wantErr:    "",
+			},
+			"echo-with-optional-auth-no-ca with echo-client-cert-invalid should succeed": {
+				host:       optionalAuthNoCAProxy.Spec.VirtualHost.Fqdn,
 				clientCert: &invalidClientCert,
 				wantErr:    "",
 			},

@@ -12,12 +12,13 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package e2e
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -25,25 +26,32 @@ import (
 	"strconv"
 	"time"
 
-	certmanagerv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
-	"github.com/onsi/ginkgo"
+	"github.com/bombsimon/logrusr/v4"
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega/gexec"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	contourv1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
+	core_v1 "k8s.io/api/core/v1"
 	apiextensions_v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	api_errors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubescheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // needed if tests are run against GCP
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	gatewayv1alpha1 "sigs.k8s.io/gateway-api/apis/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayapi_v1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayapi_v1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 
-	// needed if tests are run against GCP
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 )
 
 // Framework provides a collection of helpful functions for
@@ -74,6 +82,10 @@ type Framework struct {
 	// are part of a full Contour deployment manifest.
 	Deployment *Deployment
 
+	// Provisioner provides helpers for managing deploying resources that
+	// are part of a Contour gateway provisioner manifest.
+	Provisioner *Provisioner
+
 	// Kubectl provides helpers for managing kubectl port-forward helpers.
 	Kubectl *Kubectl
 
@@ -83,13 +95,23 @@ type Framework struct {
 func NewFramework(inClusterTestSuite bool) *Framework {
 	t := ginkgo.GinkgoT()
 
+	// Deferring GinkgoRecover() provides better error messages in case of panic
+	// e.g. when CONTOUR_E2E_LOCAL_HOST environment variable is not set.
+	defer ginkgo.GinkgoRecover()
+
+	log.SetLogger(logrusr.New(logrus.StandardLogger()))
+
 	scheme := runtime.NewScheme()
 	require.NoError(t, kubescheme.AddToScheme(scheme))
-	require.NoError(t, contourv1.AddToScheme(scheme))
-	require.NoError(t, contourv1alpha1.AddToScheme(scheme))
-	require.NoError(t, gatewayv1alpha1.AddToScheme(scheme))
+	require.NoError(t, contour_v1.AddToScheme(scheme))
+	require.NoError(t, contour_v1alpha1.AddToScheme(scheme))
+	require.NoError(t, gatewayapi_v1alpha2.Install(scheme))
+	require.NoError(t, gatewayapi_v1alpha3.Install(scheme))
+	require.NoError(t, gatewayapi_v1.Install(scheme))
 	require.NoError(t, certmanagerv1.AddToScheme(scheme))
 	require.NoError(t, apiextensions_v1.AddToScheme(scheme))
+
+	ipV6Cluster := os.Getenv("IPV6_CLUSTER") == "true"
 
 	config, err := config.GetConfig()
 	require.NoError(t, err)
@@ -118,38 +140,59 @@ func NewFramework(inClusterTestSuite bool) *Framework {
 
 	httpURLBase := os.Getenv("CONTOUR_E2E_HTTP_URL_BASE")
 	if httpURLBase == "" {
-		httpURLBase = "http://127.0.0.1:9080"
+		if ipV6Cluster {
+			httpURLBase = "http://[::1]:9080"
+		} else {
+			httpURLBase = "http://127.0.0.1:9080"
+		}
 	}
 
 	httpsURLBase := os.Getenv("CONTOUR_E2E_HTTPS_URL_BASE")
 	if httpsURLBase == "" {
-		httpsURLBase = "https://127.0.0.1:9443"
+		if ipV6Cluster {
+			httpsURLBase = "https://[::1]:9443"
+		} else {
+			httpsURLBase = "https://127.0.0.1:9443"
+		}
 	}
 
 	httpURLMetricsBase := os.Getenv("CONTOUR_E2E_HTTP_URL_METRICS_BASE")
 	if httpURLMetricsBase == "" {
-		httpURLMetricsBase = "http://127.0.0.1:8002"
+		if ipV6Cluster {
+			httpURLMetricsBase = "http://[::1]:8002"
+		} else {
+			httpURLMetricsBase = "http://127.0.0.1:8002"
+		}
 	}
 
 	httpURLAdminBase := os.Getenv("CONTOUR_E2E_HTTP_URL_ADMIN_BASE")
 	if httpURLAdminBase == "" {
-		httpURLAdminBase = "http://127.0.0.1:19001"
+		if ipV6Cluster {
+			httpURLAdminBase = "http://[::1]:19001"
+		} else {
+			httpURLAdminBase = "http://127.0.0.1:19001"
+		}
 	}
 
 	var (
-		kubeConfig  string
-		contourHost string
-		contourPort string
-		contourBin  string
+		kubeConfig   string
+		contourHost  string
+		contourPort  string
+		contourBin   string
+		contourImage string
 	)
-	if inClusterTestSuite {
-		// TODO
-	} else {
-		var found bool
-		if kubeConfig, found = os.LookupEnv("KUBECONFIG"); !found {
-			kubeConfig = filepath.Join(os.Getenv("HOME"), ".kube", "config")
-		}
 
+	var found bool
+	if kubeConfig, found = os.LookupEnv("KUBECONFIG"); !found {
+		kubeConfig = filepath.Join(os.Getenv("HOME"), ".kube", "config")
+	}
+
+	if inClusterTestSuite {
+		var found bool
+		if contourImage, found = os.LookupEnv("CONTOUR_E2E_IMAGE"); !found {
+			contourImage = "ghcr.io/projectcontour/contour:main"
+		}
+	} else {
 		contourHost = os.Getenv("CONTOUR_E2E_LOCAL_HOST")
 		require.NotEmpty(t, contourHost, "CONTOUR_E2E_LOCAL_HOST environment variable not supplied")
 
@@ -158,17 +201,24 @@ func NewFramework(inClusterTestSuite bool) *Framework {
 		}
 
 		var err error
-		contourBin, err = gexec.Build("github.com/projectcontour/contour/cmd/contour")
+		contourBin, err = gexec.Build("github.com/projectcontour/contour/cmd/contour", "-race")
 		require.NoError(t, err)
 	}
 
+	envoyDeploymentMode := DaemonsetMode
+	if val := os.Getenv("CONTOUR_E2E_ENVOY_DEPLOYMENT_MODE"); val != "" {
+		envoyDeploymentMode = EnvoyDeploymentMode(val)
+	}
+
 	deployment := &Deployment{
-		client:           crClient,
-		cmdOutputWriter:  ginkgo.GinkgoWriter,
-		kubeConfig:       kubeConfig,
-		localContourHost: contourHost,
-		localContourPort: contourPort,
-		contourBin:       contourBin,
+		client:              crClient,
+		cmdOutputWriter:     ginkgo.GinkgoWriter,
+		kubeConfig:          kubeConfig,
+		localContourHost:    contourHost,
+		localContourPort:    contourPort,
+		contourBin:          contourBin,
+		contourImage:        contourImage,
+		EnvoyDeploymentMode: envoyDeploymentMode,
 	}
 
 	kubectl := &Kubectl{
@@ -177,16 +227,28 @@ func NewFramework(inClusterTestSuite bool) *Framework {
 
 	require.NoError(t, deployment.UnmarshalResources())
 
+	provisioner := &Provisioner{
+		client:          crClient,
+		cmdOutputWriter: ginkgo.GinkgoWriter,
+		contourImage:    contourImage,
+	}
+	require.NoError(t, provisioner.UnmarshalResources())
+
 	return &Framework{
 		Client:        crClient,
 		RetryInterval: time.Second,
 		RetryTimeout:  60 * time.Second,
 		Fixtures: &Fixtures{
 			Echo: &Echo{
+				client:     crClient,
+				kubeConfig: kubeConfig,
+				t:          t,
+			},
+			EchoSecure: &EchoSecure{
 				client: crClient,
 				t:      t,
 			},
-			EchoSecure: &EchoSecure{
+			GRPC: &GRPC{
 				client: crClient,
 				t:      t,
 			},
@@ -206,9 +268,10 @@ func NewFramework(inClusterTestSuite bool) *Framework {
 			retryTimeout:  60 * time.Second,
 			t:             t,
 		},
-		Deployment: deployment,
-		Kubectl:    kubectl,
-		t:          t,
+		Deployment:  deployment,
+		Provisioner: provisioner,
+		Kubectl:     kubectl,
+		t:           t,
 	}
 }
 
@@ -218,16 +281,23 @@ func (f *Framework) T() ginkgo.GinkgoTInterface {
 	return f.t
 }
 
-type NamespacedTestBody func(string)
-type TestBody func()
+type (
+	NamespacedGatewayTestBody func(ns string, gw types.NamespacedName)
+	NamespacedTestBody        func(string)
+	TestBody                  func()
+)
 
-func (f *Framework) NamespacedTest(namespace string, body NamespacedTestBody) {
+func (f *Framework) NamespacedTest(namespace string, body NamespacedTestBody, additionalNamespaces ...string) {
 	ginkgo.Context("with namespace: "+namespace, func() {
 		ginkgo.BeforeEach(func() {
-			f.CreateNamespace(namespace)
+			for _, ns := range append(additionalNamespaces, namespace) {
+				f.CreateNamespace(ns)
+			}
 		})
 		ginkgo.AfterEach(func() {
-			f.DeleteNamespace(namespace, false)
+			for _, ns := range append(additionalNamespaces, namespace) {
+				f.DeleteNamespace(ns, false)
+			}
 		})
 
 		body(namespace)
@@ -239,99 +309,127 @@ func (f *Framework) Test(body TestBody) {
 }
 
 // CreateHTTPProxy creates the provided HTTPProxy and returns any relevant error.
-func (f *Framework) CreateHTTPProxy(proxy *contourv1.HTTPProxy) error {
+func (f *Framework) CreateHTTPProxy(proxy *contour_v1.HTTPProxy) error {
 	return f.Client.Create(context.TODO(), proxy)
+}
+
+func createAndWaitFor[T client.Object](t require.TestingT, client client.Client, obj T, condition func(T) bool, interval, timeout time.Duration) bool {
+	require.NoError(t, client.Create(context.Background(), obj))
+
+	key := types.NamespacedName{
+		Namespace: obj.GetNamespace(),
+		Name:      obj.GetName(),
+	}
+
+	if err := wait.PollUntilContextTimeout(context.Background(), interval, timeout, true, func(ctx context.Context) (bool, error) {
+		if err := client.Get(ctx, key, obj); err != nil {
+			// if there was an error, we want to keep
+			// retrying, so just return false, not an
+			// error.
+			return false, nil
+		}
+
+		return condition(obj), nil
+	}); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func updateAndWaitFor[T client.Object](t require.TestingT, cli client.Client, obj T, mutate func(T), condition func(T) bool, interval, timeout time.Duration) (T, bool) {
+	key := client.ObjectKeyFromObject(obj)
+
+	require.NoError(t, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := cli.Get(context.TODO(), key, obj); err != nil {
+			return err
+		}
+		mutate(obj)
+		return cli.Update(context.Background(), obj)
+	}))
+
+	if err := wait.PollUntilContextTimeout(context.Background(), interval, timeout, true, func(ctx context.Context) (bool, error) {
+		if err := cli.Get(ctx, key, obj); err != nil {
+			// if there was an error, we want to keep
+			// retrying, so just return false, not an
+			// error.
+			return false, nil
+		}
+
+		return condition(obj), nil
+	}); err != nil {
+		// return the last response for logging/debugging purposes
+		return obj, false
+	}
+
+	return obj, true
 }
 
 // CreateHTTPProxyAndWaitFor creates the provided HTTPProxy in the Kubernetes API
 // and then waits for the specified condition to be true.
-func (f *Framework) CreateHTTPProxyAndWaitFor(proxy *contourv1.HTTPProxy, condition func(*contourv1.HTTPProxy) bool) (*contourv1.HTTPProxy, bool) {
-	require.NoError(f.t, f.Client.Create(context.TODO(), proxy))
-
-	res := &contourv1.HTTPProxy{}
-
-	if err := wait.PollImmediate(f.RetryInterval, f.RetryTimeout, func() (bool, error) {
-		if err := f.Client.Get(context.TODO(), client.ObjectKeyFromObject(proxy), res); err != nil {
-			// if there was an error, we want to keep
-			// retrying, so just return false, not an
-			// error.
-			return false, nil
-		}
-
-		return condition(res), nil
-	}); err != nil {
-		// return the last response for logging/debugging purposes
-		return res, false
-	}
-
-	return res, true
+func (f *Framework) CreateHTTPProxyAndWaitFor(proxy *contour_v1.HTTPProxy, condition func(*contour_v1.HTTPProxy) bool) bool {
+	return createAndWaitFor(f.t, f.Client, proxy, condition, f.RetryInterval, f.RetryTimeout)
 }
 
 // CreateHTTPRouteAndWaitFor creates the provided HTTPRoute in the Kubernetes API
 // and then waits for the specified condition to be true.
-func (f *Framework) CreateHTTPRouteAndWaitFor(route *gatewayv1alpha1.HTTPRoute, condition func(*gatewayv1alpha1.HTTPRoute) bool) (*gatewayv1alpha1.HTTPRoute, bool) {
-	require.NoError(f.t, f.Client.Create(context.TODO(), route))
-
-	res := &gatewayv1alpha1.HTTPRoute{}
-
-	if err := wait.PollImmediate(f.RetryInterval, f.RetryTimeout, func() (bool, error) {
-		if err := f.Client.Get(context.TODO(), client.ObjectKeyFromObject(route), res); err != nil {
-			// if there was an error, we want to keep
-			// retrying, so just return false, not an
-			// error.
-			return false, nil
-		}
-
-		return condition(res), nil
-	}); err != nil {
-		// return the last response for logging/debugging purposes
-		return res, false
-	}
-
-	return res, true
+func (f *Framework) CreateHTTPRouteAndWaitFor(route *gatewayapi_v1.HTTPRoute, condition func(*gatewayapi_v1.HTTPRoute) bool) bool {
+	return createAndWaitFor(f.t, f.Client, route, condition, f.RetryInterval, f.RetryTimeout)
 }
 
 // CreateTLSRouteAndWaitFor creates the provided TLSRoute in the Kubernetes API
 // and then waits for the specified condition to be true.
-func (f *Framework) CreateTLSRouteAndWaitFor(route *gatewayv1alpha1.TLSRoute, condition func(*gatewayv1alpha1.TLSRoute) bool) (*gatewayv1alpha1.TLSRoute, bool) {
-	require.NoError(f.t, f.Client.Create(context.TODO(), route))
+func (f *Framework) CreateTLSRouteAndWaitFor(route *gatewayapi_v1alpha2.TLSRoute, condition func(*gatewayapi_v1alpha2.TLSRoute) bool) bool {
+	return createAndWaitFor(f.t, f.Client, route, condition, f.RetryInterval, f.RetryTimeout)
+}
 
-	res := &gatewayv1alpha1.TLSRoute{}
+// CreateTCPRouteAndWaitFor creates the provided TCPRoute in the Kubernetes API
+// and then waits for the specified condition to be true.
+func (f *Framework) CreateTCPRouteAndWaitFor(route *gatewayapi_v1alpha2.TCPRoute, condition func(*gatewayapi_v1alpha2.TCPRoute) bool) bool {
+	return createAndWaitFor(f.t, f.Client, route, condition, f.RetryInterval, f.RetryTimeout)
+}
 
-	if err := wait.PollImmediate(f.RetryInterval, f.RetryTimeout, func() (bool, error) {
-		if err := f.Client.Get(context.TODO(), client.ObjectKeyFromObject(route), res); err != nil {
-			// if there was an error, we want to keep
-			// retrying, so just return false, not an
-			// error.
-			return false, nil
-		}
+// CreateBackendTLSPolicy creates the provided BackendTLSPolicy in the Kubernetes API
+// and then waits for the specified condition to be true.
+func (f *Framework) CreateBackendTLSPolicyAndWaitFor(route *gatewayapi_v1alpha3.BackendTLSPolicy, condition func(*gatewayapi_v1alpha3.BackendTLSPolicy) bool) bool {
+	return createAndWaitFor(f.t, f.Client, route, condition, f.RetryInterval, f.RetryTimeout)
+}
 
-		return condition(res), nil
-	}); err != nil {
-		// return the last response for logging/debugging purposes
-		return res, false
-	}
-
-	return res, true
+// CreateGRPCRouteAndWaitFor creates the provided GRPCRoute in the Kubernetes API
+// and then waits for the specified condition to be true.
+func (f *Framework) CreateGRPCRouteAndWaitFor(route *gatewayapi_v1.GRPCRoute, condition func(*gatewayapi_v1.GRPCRoute) bool) bool {
+	return createAndWaitFor(f.t, f.Client, route, condition, f.RetryInterval, f.RetryTimeout)
 }
 
 // CreateNamespace creates a namespace with the given name in the
 // Kubernetes API or fails the test if it encounters an error.
 func (f *Framework) CreateNamespace(name string) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
+	ns := &core_v1.Namespace{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name:   name,
 			Labels: map[string]string{"contour-e2e-ns": "true"},
 		},
 	}
+	key := client.ObjectKeyFromObject(ns)
+
+	existing := &core_v1.Namespace{}
+	if err := f.Client.Get(context.Background(), key, existing); err == nil && existing.Status.Phase == core_v1.NamespaceTerminating {
+		// Got an existing namespace and it's terminating: give it a chance to go
+		// away.
+		require.Eventually(f.t, func() bool {
+			return api_errors.IsNotFound(f.Client.Get(context.TODO(), key, existing))
+		}, 3*time.Minute, time.Second)
+	}
+
+	// Now try creating it.
 	require.NoError(f.t, f.Client.Create(context.TODO(), ns))
 }
 
 // DeleteNamespace deletes the namespace with the given name in the
 // Kubernetes API or fails the test if it encounters an error.
 func (f *Framework) DeleteNamespace(name string, waitForDeletion bool) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
+	ns := &core_v1.Namespace{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Name: name,
 		},
 	}
@@ -347,55 +445,19 @@ func (f *Framework) DeleteNamespace(name string, waitForDeletion bool) {
 
 // CreateGatewayAndWaitFor creates a gateway in the
 // Kubernetes API or fails the test if it encounters an error.
-func (f *Framework) CreateGatewayAndWaitFor(gateway *gatewayv1alpha1.Gateway, condition func(*gatewayv1alpha1.Gateway) bool) (*gatewayv1alpha1.Gateway, bool) {
-	require.NoError(f.t, f.Client.Create(context.TODO(), gateway))
-
-	res := &gatewayv1alpha1.Gateway{}
-
-	if err := wait.PollImmediate(f.RetryInterval, f.RetryTimeout, func() (bool, error) {
-		if err := f.Client.Get(context.TODO(), client.ObjectKeyFromObject(gateway), res); err != nil {
-			// if there was an error, we want to keep
-			// retrying, so just return false, not an
-			// error.
-			return false, nil
-		}
-
-		return condition(res), nil
-	}); err != nil {
-		// return the last response for logging/debugging purposes
-		return res, false
-	}
-
-	return res, true
+func (f *Framework) CreateGatewayAndWaitFor(gateway *gatewayapi_v1.Gateway, condition func(*gatewayapi_v1.Gateway) bool) bool {
+	return createAndWaitFor(f.t, f.Client, gateway, condition, f.RetryInterval, f.RetryTimeout)
 }
 
 // CreateGatewayClassAndWaitFor creates a GatewayClass in the
 // Kubernetes API or fails the test if it encounters an error.
-func (f *Framework) CreateGatewayClassAndWaitFor(gatewayClass *gatewayv1alpha1.GatewayClass, condition func(*gatewayv1alpha1.GatewayClass) bool) (*gatewayv1alpha1.GatewayClass, bool) {
-	require.NoError(f.t, f.Client.Create(context.TODO(), gatewayClass))
-
-	res := &gatewayv1alpha1.GatewayClass{}
-
-	if err := wait.PollImmediate(f.RetryInterval, f.RetryTimeout, func() (bool, error) {
-		if err := f.Client.Get(context.TODO(), client.ObjectKeyFromObject(gatewayClass), res); err != nil {
-			// if there was an error, we want to keep
-			// retrying, so just return false, not an
-			// error.
-			return false, nil
-		}
-
-		return condition(res), nil
-	}); err != nil {
-		// return the last response for logging/debugging purposes
-		return res, false
-	}
-
-	return res, true
+func (f *Framework) CreateGatewayClassAndWaitFor(gatewayClass *gatewayapi_v1.GatewayClass, condition func(*gatewayapi_v1.GatewayClass) bool) bool {
+	return createAndWaitFor(f.t, f.Client, gatewayClass, condition, f.RetryInterval, f.RetryTimeout)
 }
 
 // DeleteGateway deletes the provided gateway in the Kubernetes API
 // or fails the test if it encounters an error.
-func (f *Framework) DeleteGateway(gw *gatewayv1alpha1.Gateway, waitForDeletion bool) error {
+func (f *Framework) DeleteGateway(gw *gatewayapi_v1.Gateway, waitForDeletion bool) error {
 	require.NoError(f.t, f.Client.Delete(context.TODO(), gw))
 
 	if waitForDeletion {
@@ -409,7 +471,7 @@ func (f *Framework) DeleteGateway(gw *gatewayv1alpha1.Gateway, waitForDeletion b
 
 // DeleteGatewayClass deletes the provided gatewayclass in the
 // Kubernetes API or fails the test if it encounters an error.
-func (f *Framework) DeleteGatewayClass(gwc *gatewayv1alpha1.GatewayClass, waitForDeletion bool) error {
+func (f *Framework) DeleteGatewayClass(gwc *gatewayapi_v1.GatewayClass, waitForDeletion bool) error {
 	require.NoError(f.t, f.Client.Delete(context.TODO(), gwc))
 
 	if waitForDeletion {
@@ -441,4 +503,72 @@ type EchoResponseBody struct {
 	Ingress        string      `json:"ingress"`
 	Service        string      `json:"service"`
 	Pod            string      `json:"pod"`
+}
+
+func UsingContourConfigCRD() bool {
+	useContourConfiguration, found := os.LookupEnv("USE_CONTOUR_CONFIGURATION_CRD")
+	return found && useContourConfiguration == "true"
+}
+
+// HTTPProxyValid returns true if the proxy has a .status.currentStatus
+// of "valid".
+func HTTPProxyValid(proxy *contour_v1.HTTPProxy) bool {
+	if proxy == nil {
+		return false
+	}
+
+	if len(proxy.Status.Conditions) == 0 {
+		return false
+	}
+
+	cond := proxy.Status.GetConditionFor("Valid")
+	return cond.Status == "True"
+}
+
+// HTTPProxyInvalid returns true if the proxy has a .status.currentStatus
+// of "invalid".
+func HTTPProxyInvalid(proxy *contour_v1.HTTPProxy) bool {
+	return proxy != nil && proxy.Status.CurrentStatus == "invalid"
+}
+
+// HTTPProxyNotReconciled returns true if the proxy has a .status.currentStatus
+// of "NotReconciled".
+func HTTPProxyNotReconciled(proxy *contour_v1.HTTPProxy) bool {
+	return proxy != nil && proxy.Status.CurrentStatus == "NotReconciled"
+}
+
+// HTTPProxyErrors provides a pretty summary of any Errors on the HTTPProxy Valid condition.
+// If there are no errors, the return value will be empty.
+func HTTPProxyErrors(proxy *contour_v1.HTTPProxy) string {
+	cond := proxy.Status.GetConditionFor("Valid")
+	errors := cond.Errors
+	if len(errors) > 0 {
+		return spew.Sdump(errors)
+	}
+
+	return ""
+}
+
+// DetailedConditionInvalid returns true if the provided detailed condition
+// list contains a condition of type "Valid" and status "False".
+func DetailedConditionInvalid(conditions []contour_v1.DetailedCondition) bool {
+	for _, c := range conditions {
+		if c.Condition.Type == "Valid" {
+			return c.Condition.Status == "False"
+		}
+	}
+	return false
+}
+
+// VerifyTLSServerCert returns a TLS config functional
+// option that enables verifying the TLS server cert using
+// the provided CA cert.
+func VerifyTLSServerCert(caCert []byte) func(*tls.Config) {
+	return func(c *tls.Config) {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+
+		c.RootCAs = certPool
+		c.InsecureSkipVerify = false
+	}
 }

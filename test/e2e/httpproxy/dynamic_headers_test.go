@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package httpproxy
 
@@ -20,12 +19,13 @@ import (
 	"net/http"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 func testDynamicHeaders(namespace string) {
@@ -34,23 +34,23 @@ func testDynamicHeaders(namespace string) {
 
 		f.Fixtures.Echo.Deploy(namespace, "ingress-conformance-echo")
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "dynamic-headers",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "dynamicheaders.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name:                  "ingress-conformance-echo",
 								Port:                  80,
-								RequestHeadersPolicy:  &contourv1.HeadersPolicy{},
-								ResponseHeadersPolicy: &contourv1.HeadersPolicy{},
+								RequestHeadersPolicy:  &contour_v1.HeadersPolicy{},
+								ResponseHeadersPolicy: &contour_v1.HeadersPolicy{},
 							},
 						},
 					},
@@ -95,7 +95,7 @@ func testDynamicHeaders(namespace string) {
 			"X-Contour-Service":               "%CONTOUR_SERVICE_NAME%:%CONTOUR_SERVICE_PORT%",
 		}
 		for k, v := range requestHeaders {
-			hv := contourv1.HeaderValue{
+			hv := contour_v1.HeaderValue{
 				Name:  k,
 				Value: v,
 			}
@@ -137,14 +137,14 @@ func testDynamicHeaders(namespace string) {
 			"X-Dynamic-Header-24":             "%RESPONSE_CODE_DETAILS%",
 		}
 		for k, v := range responseHeaders {
-			hv := contourv1.HeaderValue{
+			hv := contour_v1.HeaderValue{
 				Name:  k,
 				Value: v,
 			}
 			p.Spec.Routes[0].Services[0].ResponseHeadersPolicy.Set = append(p.Spec.Routes[0].Services[0].ResponseHeadersPolicy.Set, hv)
 		}
 
-		f.CreateHTTPProxyAndWaitFor(p, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(p, e2e.HTTPProxyValid))
 
 		res, ok := f.HTTP.RequestUntil(&e2e.HTTPRequestOpts{
 			Host:      p.Spec.VirtualHost.Fqdn,

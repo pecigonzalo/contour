@@ -20,40 +20,46 @@ import (
 	"math/rand"
 	"net"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
-	envoy_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	envoy_service_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
-	envoy_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_service_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	envoy_service_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	envoy_service_route_v3 "github.com/envoyproxy/go-control-plane/envoy/service/route/v3"
 	envoy_service_secret_v3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes/any"
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	envoy_server_v3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	core_v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/cache"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 	"github.com/projectcontour/contour/internal/contour"
 	"github.com/projectcontour/contour/internal/dag"
+	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
+	v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/fixture"
 	"github.com/projectcontour/contour/internal/k8s"
 	"github.com/projectcontour/contour/internal/metrics"
 	"github.com/projectcontour/contour/internal/protobuf"
 	"github.com/projectcontour/contour/internal/sorter"
 	"github.com/projectcontour/contour/internal/status"
-	"github.com/projectcontour/contour/internal/workgroup"
 	"github.com/projectcontour/contour/internal/xds"
 	contour_xds_v3 "github.com/projectcontour/contour/internal/xds/v3"
 	"github.com/projectcontour/contour/internal/xdscache"
 	xdscache_v3 "github.com/projectcontour/contour/internal/xdscache/v3"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/cache"
 )
 
 const (
@@ -64,7 +70,15 @@ const (
 	secretType   = resource.SecretType
 )
 
-func setup(t *testing.T, opts ...interface{}) (cache.ResourceEventHandler, *Contour, func()) {
+// ResourceEventHandlerWrapper wraps the ResourceEventHandler interface from client-go/tools/cache.
+// The OnAdd function has a boolean parameter that we do not need for testing.
+type ResourceEventHandlerWrapper interface {
+	OnAdd(obj any)
+	OnUpdate(oldObj, newObj any)
+	OnDelete(obj any)
+}
+
+func setup(t *testing.T, opts ...any) (ResourceEventHandlerWrapper, *Contour, func()) {
 	t.Parallel()
 
 	log := fixture.NewTestLogger(t)
@@ -79,11 +93,21 @@ func setup(t *testing.T, opts ...interface{}) (cache.ResourceEventHandler, *Cont
 		}
 	}
 
+	envoyGen := v3.NewEnvoyGen(envoy_v3.EnvoyGenOpt{
+		XDSClusterName: envoy_v3.DefaultXDSClusterName,
+	})
+
 	resources := []xdscache.ResourceCache{
-		xdscache_v3.NewListenerCache(conf, "0.0.0.0", 8002, 0),
+		xdscache_v3.NewListenerCache(
+			conf,
+			contour_v1alpha1.MetricsConfig{Address: "0.0.0.0", Port: 8002},
+			contour_v1alpha1.HealthConfig{Address: "0.0.0.0", Port: 8002},
+			0,
+			envoyGen,
+		),
 		&xdscache_v3.SecretCache{},
 		&xdscache_v3.RouteCache{},
-		&xdscache_v3.ClusterCache{},
+		xdscache_v3.NewClusterCache(envoyGen),
 		et,
 	}
 
@@ -93,87 +117,93 @@ func setup(t *testing.T, opts ...interface{}) (cache.ResourceEventHandler, *Cont
 		}
 	}
 
+	snapshotHandler := xdscache_v3.NewSnapshotHandler(resources, log)
+	et.SetObserver(snapshotHandler)
+
 	registry := prometheus.NewRegistry()
 
-	rand.Seed(time.Now().Unix())
+	builder := &dag.Builder{
+		Source: dag.KubernetesCache{
+			FieldLogger: log,
+		},
+		Processors: []dag.Processor{
+			&dag.ListenerProcessor{
+				HTTPAddress:  "0.0.0.0",
+				HTTPPort:     8080,
+				HTTPSAddress: "0.0.0.0",
+				HTTPSPort:    8443,
+			},
+			&dag.IngressProcessor{
+				FieldLogger: log.WithField("context", "IngressProcessor"),
+			},
+			&dag.ExtensionServiceProcessor{
+				FieldLogger: log.WithField("context", "ExtensionServiceProcessor"),
+			},
+			&dag.HTTPProxyProcessor{},
+			&dag.GatewayAPIProcessor{
+				FieldLogger: log.WithField("context", "GatewayAPIProcessor"),
+			},
+		},
+	}
+	for _, opt := range opts {
+		if opt, ok := opt.(func(*dag.Builder)); ok {
+			opt(builder)
+		}
+	}
 
 	statusUpdateCacher := &k8s.StatusUpdateCacher{}
-	eh := &contour.EventHandler{
-		IsLeader:      make(chan struct{}),
+	eh := contour.NewEventHandler(contour.EventHandlerConfig{
+		Logger:        log,
 		StatusUpdater: statusUpdateCacher,
-		FieldLogger:   log,
-		Sequence:      make(chan int, 1),
 		//nolint:gosec
 		HoldoffDelay: time.Duration(rand.Intn(100)) * time.Millisecond,
 		//nolint:gosec
 		HoldoffMaxDelay: time.Duration(rand.Intn(500)) * time.Millisecond,
-		Observer: &contour.RebuildMetricsObserver{
-			Metrics:      metrics.NewMetrics(registry),
-			NextObserver: dag.ComposeObservers(xdscache.ObserversOf(resources)...),
-		},
-		Builder: dag.Builder{
-			Source: dag.KubernetesCache{
-				FieldLogger: log,
-			},
-		},
-	}
-
-	eh.Builder.Processors = []dag.Processor{
-		&dag.IngressProcessor{
-			FieldLogger: log.WithField("context", "IngressProcessor"),
-		},
-		&dag.ExtensionServiceProcessor{
-			FieldLogger: log.WithField("context", "ExtensionServiceProcessor"),
-		},
-		&dag.HTTPProxyProcessor{},
-		&dag.GatewayAPIProcessor{
-			FieldLogger: log.WithField("context", "GatewayAPIProcessor"),
-		},
-		&dag.ListenerProcessor{},
-	}
-
-	for _, opt := range opts {
-		if opt, ok := opt.(func(*contour.EventHandler)); ok {
-			opt(eh)
-		}
-	}
-
-	// Make this event handler win the leader election.
-	close(eh.IsLeader)
+		Observer: contour.NewRebuildMetricsObserver(
+			metrics.NewMetrics(registry),
+			dag.ComposeObservers(append(xdscache.ObserversOf(resources), snapshotHandler)...),
+		),
+		Builder: builder,
+	}, func() bool { return true })
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	srv := xds.NewServer(registry)
-	contour_xds_v3.RegisterServer(contour_xds_v3.NewContourServer(log, xdscache.ResourcesOf(resources)...), srv)
+	contour_xds_v3.RegisterServer(envoy_server_v3.NewServer(context.Background(), snapshotHandler.GetCache(), contour_xds_v3.NewRequestLoggingCallbacks(log)), srv)
 
-	var g workgroup.Group
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
 
-	g.Add(func(stop <-chan struct{}) error {
-		go func() {
-			<-stop
-			srv.GracefulStop()
-		}()
-		return srv.Serve(l) // srv now owns l and will close l before returning
-	})
-	g.Add(eh.Start())
+	wg.Add(1)
+	go func() {
+		// Returns once GracefulStop() is called by the below goroutine.
+		// nolint:errcheck
+		srv.Serve(l)
 
-	cc, err := grpc.Dial(l.Addr().String(), grpc.WithInsecure())
+		wg.Done()
+	}()
+
+	wg.Add(1)
+	go func() {
+		// Returns once the context is cancelled by the cleanup func.
+		// nolint:errcheck
+		eh.Start(ctx)
+
+		// Close the gRPC server and its listener.
+		srv.GracefulStop()
+		wg.Done()
+	}()
+
+	cc, err := grpc.NewClient(l.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 
 	rh := &resourceEventHandler{
 		EventHandler:       eh,
 		EndpointsHandler:   et,
-		Sequence:           eh.Sequence,
+		Sequence:           eh.Sequence(),
 		statusUpdateCacher: statusUpdateCacher,
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error)
-	go func() {
-		done <- g.Run(ctx)
-	}()
 
 	return rh, &Contour{
 			T:                 t,
@@ -186,7 +216,8 @@ func setup(t *testing.T, opts ...interface{}) (cache.ResourceEventHandler, *Cont
 			// stop server
 			cancel()
 
-			<-done
+			// wait for everything to gracefully stop.
+			wg.Wait()
 		}
 }
 
@@ -198,21 +229,21 @@ type resourceEventHandler struct {
 	EventHandler     cache.ResourceEventHandler
 	EndpointsHandler cache.ResourceEventHandler
 
-	Sequence chan int
+	Sequence <-chan int
 
 	statusUpdateCacher *k8s.StatusUpdateCacher
 }
 
-func (r *resourceEventHandler) OnAdd(obj interface{}) {
+func (r *resourceEventHandler) OnAdd(obj any) {
 	if r.statusUpdateCacher.IsCacheable(obj) {
 		r.statusUpdateCacher.OnAdd(obj)
 	}
 
 	switch obj.(type) {
-	case *v1.Endpoints:
-		r.EndpointsHandler.OnAdd(obj)
+	case *core_v1.Endpoints:
+		r.EndpointsHandler.OnAdd(obj, false)
 	default:
-		r.EventHandler.OnAdd(obj)
+		r.EventHandler.OnAdd(obj, false)
 
 		// Wait for the sequence counter to be incremented, which happens
 		// after the DAG has been rebuilt and observed.
@@ -220,7 +251,7 @@ func (r *resourceEventHandler) OnAdd(obj interface{}) {
 	}
 }
 
-func (r *resourceEventHandler) OnUpdate(oldObj, newObj interface{}) {
+func (r *resourceEventHandler) OnUpdate(oldObj, newObj any) {
 	// Ensure that tests don't sample stale status.
 	if r.statusUpdateCacher.IsCacheable(oldObj) {
 		r.statusUpdateCacher.OnDelete(oldObj)
@@ -231,7 +262,7 @@ func (r *resourceEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	}
 
 	switch newObj.(type) {
-	case *v1.Endpoints:
+	case *core_v1.Endpoints:
 		r.EndpointsHandler.OnUpdate(oldObj, newObj)
 	default:
 		r.EventHandler.OnUpdate(oldObj, newObj)
@@ -242,7 +273,7 @@ func (r *resourceEventHandler) OnUpdate(oldObj, newObj interface{}) {
 	}
 }
 
-func (r *resourceEventHandler) OnDelete(obj interface{}) {
+func (r *resourceEventHandler) OnDelete(obj any) {
 	// Delete this object from the status cache before we make
 	// the deletion visible.
 	if r.statusUpdateCacher.IsCacheable(obj) {
@@ -250,7 +281,7 @@ func (r *resourceEventHandler) OnDelete(obj interface{}) {
 	}
 
 	switch obj.(type) {
-	case *v1.Endpoints:
+	case *core_v1.Endpoints:
 		r.EndpointsHandler.OnDelete(obj)
 	default:
 		r.EventHandler.OnDelete(obj)
@@ -263,14 +294,14 @@ func (r *resourceEventHandler) OnDelete(obj interface{}) {
 
 // routeResources returns the given routes as a slice of any.Any
 // resources, appropriately sorted.
-func routeResources(t *testing.T, routes ...*envoy_route_v3.RouteConfiguration) []*any.Any {
+func routeResources(t *testing.T, routes ...*envoy_config_route_v3.RouteConfiguration) []*anypb.Any {
 	sort.Stable(sorter.For(routes))
 	return resources(t, protobuf.AsMessages(routes)...)
 }
 
-func resources(t *testing.T, protos ...proto.Message) []*any.Any {
+func resources(t *testing.T, protos ...proto.Message) []*anypb.Any {
 	t.Helper()
-	anys := make([]*any.Any, 0, len(protos))
+	anys := make([]*anypb.Any, 0, len(protos))
 	for _, pb := range protos {
 		anys = append(anys, protobuf.MustMarshalAny(pb))
 	}
@@ -278,26 +309,26 @@ func resources(t *testing.T, protos ...proto.Message) []*any.Any {
 }
 
 type grpcStream interface {
-	Send(*envoy_discovery_v3.DiscoveryRequest) error
-	Recv() (*envoy_discovery_v3.DiscoveryResponse, error)
+	Send(*envoy_service_discovery_v3.DiscoveryRequest) error
+	Recv() (*envoy_service_discovery_v3.DiscoveryResponse, error)
 }
 
 type StatusResult struct {
 	*Contour
 
 	Err  error
-	Have *contour_api_v1.HTTPProxyStatus
+	Have *contour_v1.HTTPProxyStatus
 }
 
 // Equals asserts that the status result is not an error and matches
 // the wanted status exactly.
-func (s *StatusResult) Equals(want contour_api_v1.HTTPProxyStatus) *Contour {
+func (s *StatusResult) Equals(want contour_v1.HTTPProxyStatus) *Contour {
 	s.T.Helper()
 
 	// We should never get an error fetching the status for an
 	// object, so make it fatal if we do.
 	if s.Err != nil {
-		s.T.Fatalf(s.Err.Error())
+		s.T.Fatal(s.Err.Error())
 	}
 
 	assert.Equal(s.T, want, *s.Have)
@@ -306,26 +337,26 @@ func (s *StatusResult) Equals(want contour_api_v1.HTTPProxyStatus) *Contour {
 
 // Like asserts that the status result is not an error and matches
 // non-empty fields in the wanted status.
-func (s *StatusResult) Like(want contour_api_v1.HTTPProxyStatus) *Contour {
+func (s *StatusResult) Like(want contour_v1.HTTPProxyStatus) *Contour {
 	s.T.Helper()
 
 	// We should never get an error fetching the status for an
 	// object, so make it fatal if we do.
 	if s.Err != nil {
-		s.T.Fatalf(s.Err.Error())
+		s.T.Fatal(s.Err.Error())
 	}
 
 	if len(want.CurrentStatus) > 0 {
 		assert.Equal(s.T,
-			contour_api_v1.HTTPProxyStatus{CurrentStatus: want.CurrentStatus},
-			contour_api_v1.HTTPProxyStatus{CurrentStatus: s.Have.CurrentStatus},
+			contour_v1.HTTPProxyStatus{CurrentStatus: want.CurrentStatus},
+			contour_v1.HTTPProxyStatus{CurrentStatus: s.Have.CurrentStatus},
 		)
 	}
 
 	if len(want.Description) > 0 {
 		assert.Equal(s.T,
-			contour_api_v1.HTTPProxyStatus{Description: want.Description},
-			contour_api_v1.HTTPProxyStatus{Description: s.Have.Description},
+			contour_v1.HTTPProxyStatus{Description: want.Description},
+			contour_v1.HTTPProxyStatus{Description: s.Have.Description},
 		)
 	}
 
@@ -334,10 +365,10 @@ func (s *StatusResult) Like(want contour_api_v1.HTTPProxyStatus) *Contour {
 
 // HasError asserts that there is an error on the Valid Condition in the proxy
 // that matches the given values.
-func (s *StatusResult) HasError(condType string, reason, message string) *Contour {
-	assert.Equal(s.T, s.Have.CurrentStatus, string(status.ProxyStatusInvalid))
-	assert.Equal(s.T, s.Have.Description, `At least one error present, see Errors for details`)
-	validCond := s.Have.GetConditionFor(contour_api_v1.ValidConditionType)
+func (s *StatusResult) HasError(condType, reason, message string) *Contour {
+	assert.Equal(s.T, string(status.ProxyStatusInvalid), s.Have.CurrentStatus)
+	assert.Equal(s.T, "At least one error present, see Errors for details", s.Have.Description)
+	validCond := s.Have.GetConditionFor(contour_v1.ValidConditionType)
 	assert.NotNil(s.T, validCond)
 
 	subCond, ok := validCond.GetError(condType)
@@ -377,7 +408,7 @@ type Contour struct {
 
 // Status returns a StatusResult object that can be used to assert
 // on object status fields.
-func (c *Contour) Status(obj interface{}) *StatusResult {
+func (c *Contour) Status(obj any) *StatusResult {
 	s, err := c.statusUpdateCache.GetStatus(obj)
 
 	return &StatusResult{
@@ -388,7 +419,7 @@ func (c *Contour) Status(obj interface{}) *StatusResult {
 }
 
 // NoStatus asserts that the given object did not get any status set.
-func (c *Contour) NoStatus(obj interface{}) *Contour {
+func (c *Contour) NoStatus(obj any) *Contour {
 	if _, err := c.statusUpdateCache.GetStatus(obj); err == nil {
 		c.T.Errorf("found cached object status, wanted no status")
 	}
@@ -430,7 +461,7 @@ func (c *Contour) Request(typeurl string, names ...string) *Response {
 	default:
 		c.Fatal("unknown typeURL:", typeurl)
 	}
-	resp := c.sendRequest(st, &envoy_discovery_v3.DiscoveryRequest{
+	resp := c.sendRequest(st, &envoy_service_discovery_v3.DiscoveryRequest{
 		TypeUrl:       typeurl,
 		ResourceNames: names,
 	})
@@ -440,7 +471,7 @@ func (c *Contour) Request(typeurl string, names ...string) *Response {
 	}
 }
 
-func (c *Contour) sendRequest(stream grpcStream, req *envoy_discovery_v3.DiscoveryRequest) *envoy_discovery_v3.DiscoveryResponse {
+func (c *Contour) sendRequest(stream grpcStream, req *envoy_service_discovery_v3.DiscoveryRequest) *envoy_service_discovery_v3.DiscoveryResponse {
 	err := stream.Send(req)
 	require.NoError(c, err)
 	resp, err := stream.Recv()
@@ -450,13 +481,16 @@ func (c *Contour) sendRequest(stream grpcStream, req *envoy_discovery_v3.Discove
 
 type Response struct {
 	*Contour
-	*envoy_discovery_v3.DiscoveryResponse
+	*envoy_service_discovery_v3.DiscoveryResponse
 }
 
 // Equals tests that the response retrieved from Contour is equal to the supplied value.
 // TODO(youngnick) This function really should be copied to an `EqualResources` function.
-func (r *Response) Equals(want *envoy_discovery_v3.DiscoveryResponse) *Contour {
+func (r *Response) Equals(want *envoy_service_discovery_v3.DiscoveryResponse) *Contour {
 	r.Helper()
+
+	sort.Slice(want.Resources, func(i, j int) bool { return string(want.Resources[i].Value) < string(want.Resources[j].Value) })
+	sort.Slice(r.Resources, func(i, j int) bool { return string(r.Resources[i].Value) < string(r.Resources[j].Value) })
 
 	protobuf.RequireEqual(r.T, want.Resources, r.DiscoveryResponse.Resources)
 

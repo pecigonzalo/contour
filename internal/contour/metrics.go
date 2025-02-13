@@ -19,13 +19,14 @@ package contour
 import (
 	"time"
 
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/client-go/tools/cache"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/k8s"
 	"github.com/projectcontour/contour/internal/metrics"
 	"github.com/projectcontour/contour/internal/status"
-	"github.com/prometheus/client_golang/prometheus"
-	"k8s.io/client-go/tools/cache"
 )
 
 // EventRecorder records the count and kind of events forwarded
@@ -35,22 +36,22 @@ type EventRecorder struct {
 	Counter *prometheus.CounterVec
 }
 
-func (e *EventRecorder) OnAdd(obj interface{}) {
+func (e *EventRecorder) OnAdd(obj any, isInInitialList bool) {
 	e.recordOperation("add", obj)
-	e.Next.OnAdd(obj)
+	e.Next.OnAdd(obj, isInInitialList)
 }
 
-func (e *EventRecorder) OnUpdate(oldObj, newObj interface{}) {
+func (e *EventRecorder) OnUpdate(oldObj, newObj any) {
 	e.recordOperation("update", newObj) // the api server guarantees that an object's kind cannot be updated
 	e.Next.OnUpdate(oldObj, newObj)
 }
 
-func (e *EventRecorder) OnDelete(obj interface{}) {
+func (e *EventRecorder) OnDelete(obj any) {
 	e.recordOperation("delete", obj)
 	e.Next.OnDelete(obj)
 }
 
-func (e *EventRecorder) recordOperation(op string, obj interface{}) {
+func (e *EventRecorder) recordOperation(op string, obj any) {
 	kind := k8s.KindOf(obj)
 	if kind == "" {
 		kind = "unknown"
@@ -61,29 +62,40 @@ func (e *EventRecorder) recordOperation(op string, obj interface{}) {
 // RebuildMetricsObserver is a dag.Observer that emits metrics for DAG rebuilds.
 type RebuildMetricsObserver struct {
 	// Metrics to emit.
-	Metrics *metrics.Metrics
+	metrics *metrics.Metrics
 
-	// IsLeader will become ready to read when this EventHandler becomes
-	// the leader. If IsLeader is not readable, or nil, status events will
+	// httpProxyMetricsEnabled will become ready to read when this EventHandler becomes
+	// the leader. If httpProxyMetricsEnabled is not readable, or nil, status events will
 	// be suppressed.
-	IsLeader chan struct{}
+	httpProxyMetricsEnabled chan struct{}
 
 	// NextObserver contains the stack of dag.Observers that act on DAG rebuilds.
-	NextObserver dag.Observer
+	nextObserver dag.Observer
+}
+
+func NewRebuildMetricsObserver(metrics *metrics.Metrics, nextObserver dag.Observer) *RebuildMetricsObserver {
+	return &RebuildMetricsObserver{
+		metrics:                 metrics,
+		nextObserver:            nextObserver,
+		httpProxyMetricsEnabled: make(chan struct{}),
+	}
+}
+
+func (m *RebuildMetricsObserver) OnElectedLeader() {
+	close(m.httpProxyMetricsEnabled)
 }
 
 func (m *RebuildMetricsObserver) OnChange(d *dag.DAG) {
-	m.Metrics.SetDAGLastRebuilt(time.Now())
-	m.Metrics.SetDAGRebuiltTotal()
+	m.metrics.SetDAGLastRebuilt(time.Now())
+	m.metrics.SetDAGRebuiltTotal()
 
-	timer := prometheus.NewTimer(m.Metrics.CacheHandlerOnUpdateSummary)
-	m.NextObserver.OnChange(d)
+	timer := prometheus.NewTimer(m.metrics.CacheHandlerOnUpdateSummary)
+	m.nextObserver.OnChange(d)
 	timer.ObserveDuration()
 
 	select {
-	// If we are leader, the IsLeader channel is closed.
-	case <-m.IsLeader:
-		m.Metrics.SetHTTPProxyMetric(calculateRouteMetric(d.StatusCache.GetProxyUpdates()))
+	case <-m.httpProxyMetricsEnabled:
+		m.metrics.SetHTTPProxyMetric(calculateRouteMetric(d.StatusCache.GetProxyUpdates()))
 	default:
 	}
 }
@@ -111,13 +123,13 @@ func calculateRouteMetric(updates []*status.ProxyUpdate) metrics.RouteMetric {
 	}
 }
 
-func calcMetrics(u *status.ProxyUpdate, metricValid map[metrics.Meta]int, metricInvalid map[metrics.Meta]int, metricOrphaned map[metrics.Meta]int, metricTotal map[metrics.Meta]int) {
+func calcMetrics(u *status.ProxyUpdate, metricValid, metricInvalid, metricOrphaned, metricTotal map[metrics.Meta]int) {
 	validCond := u.ConditionFor(status.ValidCondition)
 	switch validCond.Status {
-	case contour_api_v1.ConditionTrue:
+	case contour_v1.ConditionTrue:
 		metricValid[metrics.Meta{VHost: u.Vhost, Namespace: u.Fullname.Namespace}]++
-	case contour_api_v1.ConditionFalse:
-		if _, ok := validCond.GetError(contour_api_v1.ConditionTypeOrphanedError); ok {
+	case contour_v1.ConditionFalse:
+		if _, ok := validCond.GetError(contour_v1.ConditionTypeOrphanedError); ok {
 			metricOrphaned[metrics.Meta{Namespace: u.Fullname.Namespace}]++
 		} else {
 			metricInvalid[metrics.Meta{VHost: u.Vhost, Namespace: u.Fullname.Namespace}]++

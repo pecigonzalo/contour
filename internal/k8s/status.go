@@ -15,14 +15,12 @@ package k8s
 
 import (
 	"context"
-	"fmt"
+	"time"
 
 	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -30,31 +28,31 @@ import (
 // Send down a channel to the goroutine that actually writes the changes back.
 type StatusUpdate struct {
 	NamespacedName types.NamespacedName
-	Resource       schema.GroupVersionResource
+	Resource       client.Object
 	Mutator        StatusMutator
 }
 
-func NewStatusUpdate(name, namespace string, gvr schema.GroupVersionResource, mutator StatusMutator) StatusUpdate {
+func NewStatusUpdate(name, namespace string, resource client.Object, mutator StatusMutator) StatusUpdate {
 	return StatusUpdate{
 		NamespacedName: types.NamespacedName{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Resource: gvr,
+		Resource: resource,
 		Mutator:  mutator,
 	}
 }
 
 // StatusMutator is an interface to hold mutator functions for status updates.
 type StatusMutator interface {
-	Mutate(obj interface{}) interface{}
+	Mutate(obj client.Object) client.Object
 }
 
 // StatusMutatorFunc is a function adaptor for StatusMutators.
-type StatusMutatorFunc func(interface{}) interface{}
+type StatusMutatorFunc func(client.Object) client.Object
 
 // Mutate adapts the StatusMutatorFunc to fit through the StatusMutator interface.
-func (m StatusMutatorFunc) Mutate(old interface{}) interface{} {
+func (m StatusMutatorFunc) Mutate(old client.Object) client.Object {
 	if m == nil {
 		return nil
 	}
@@ -62,121 +60,115 @@ func (m StatusMutatorFunc) Mutate(old interface{}) interface{} {
 	return m(old)
 }
 
+type StatusMetrics interface {
+	SetStatusUpdateTotal(kind string)
+	SetStatusUpdateSuccess(kind string)
+	SetStatusUpdateNoop(kind string)
+	SetStatusUpdateFailed(kind string)
+	SetStatusUpdateConflict(kind string)
+	SetStatusUpdateDuration(duration time.Duration, kind string, onError bool)
+}
+
 // StatusUpdateHandler holds the details required to actually write an Update back to the referenced object.
 type StatusUpdateHandler struct {
-	Log           logrus.FieldLogger
-	Clients       *Clients
-	Cache         cache.Cache
-	UpdateChannel chan StatusUpdate
-	LeaderElected chan struct{}
-	IsLeader      bool
-	Converter     *UnstructuredConverter
+	log           logrus.FieldLogger
+	client        client.Client
+	metrics       StatusMetrics
+	sendUpdates   chan struct{}
+	updateChannel chan StatusUpdate
+}
+
+func NewStatusUpdateHandler(log logrus.FieldLogger, client client.Client, metrics StatusMetrics) *StatusUpdateHandler {
+	return &StatusUpdateHandler{
+		log:           log,
+		client:        client,
+		metrics:       metrics,
+		sendUpdates:   make(chan struct{}),
+		updateChannel: make(chan StatusUpdate, 100),
+	}
 }
 
 func (suh *StatusUpdateHandler) apply(upd StatusUpdate) {
-	gvk, err := suh.Clients.KindFor(upd.Resource)
+	var statusUpdateErr error
+	objKind := KindOf(upd.Resource)
+	log := suh.log.WithField("name", upd.NamespacedName.Name).
+		WithField("namespace", upd.NamespacedName.Namespace).
+		WithField("kind", objKind)
 
-	if err != nil {
-		suh.Log.WithError(err).
-			WithField("name", upd.NamespacedName.Name).
-			WithField("namespace", upd.NamespacedName.Namespace).
-			WithField("resource", upd.Resource).
-			Error("failed to map Resource to Kind ")
-		return
-	}
+	startTime := time.Now()
 
-	tmpl, err := suh.Converter.scheme.New(gvk)
-	if err != nil {
-		suh.Log.WithError(err).
-			WithField("name", upd.NamespacedName.Name).
-			WithField("namespace", upd.NamespacedName.Namespace).
-			WithField("kind", gvk).
-			Error("failed to allocate template object")
-		return
-	}
+	suh.metrics.SetStatusUpdateTotal(objKind)
 
-	obj, ok := tmpl.(client.Object)
-	if !ok {
-		suh.Log.
-			WithField("name", upd.NamespacedName.Name).
-			WithField("namespace", upd.NamespacedName.Namespace).
-			WithField("kind", gvk).
-			Error("failed to type-assert to client.Object")
-		return
-	}
+	defer func() {
+		updateDuration := time.Since(startTime)
+		if statusUpdateErr != nil {
+			suh.metrics.SetStatusUpdateDuration(updateDuration, objKind, true)
+			suh.metrics.SetStatusUpdateFailed(objKind)
+		} else {
+			suh.metrics.SetStatusUpdateDuration(updateDuration, objKind, false)
+			suh.metrics.SetStatusUpdateSuccess(objKind)
+		}
+	}()
 
-	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		// Get the resource from the informer cache.
-		if err := suh.Cache.Get(context.Background(), upd.NamespacedName, obj); err != nil {
+	if statusUpdateErr = retry.OnError(retry.DefaultBackoff, func(applyErr error) bool {
+		if errors.IsConflict(applyErr) {
+			suh.metrics.SetStatusUpdateConflict(objKind)
+			return true
+		}
+		return false
+	}, func() error {
+		obj := upd.Resource
+
+		// Get the resource.
+		if err := suh.client.Get(context.Background(), upd.NamespacedName, obj); err != nil {
 			return err
 		}
 
 		newObj := upd.Mutator.Mutate(obj)
 
 		if isStatusEqual(obj, newObj) {
-			suh.Log.WithField("name", upd.NamespacedName.Name).
-				WithField("namespace", upd.NamespacedName.Namespace).
-				Debug("update was a no-op")
+			log.Debug("update was a no-op")
+			suh.metrics.SetStatusUpdateNoop(objKind)
 			return nil
 		}
 
-		usNewObj, err := suh.Converter.ToUnstructured(newObj)
-		if err != nil {
-			return fmt.Errorf("unable to convert object: %w", err)
-		}
-
-		_, err = suh.Clients.DynamicClient().
-			Resource(upd.Resource).
-			Namespace(upd.NamespacedName.Namespace).
-			UpdateStatus(context.Background(), usNewObj, metav1.UpdateOptions{})
-		return err
-	}); err != nil {
-		suh.Log.WithError(err).
-			WithField("name", upd.NamespacedName.Name).
-			WithField("namespace", upd.NamespacedName.Namespace).
-			Error("unable to update status")
+		return suh.client.Status().Update(context.Background(), newObj)
+	}); statusUpdateErr != nil {
+		log.WithError(statusUpdateErr).Error("unable to update status")
 	}
 }
 
+func (suh *StatusUpdateHandler) NeedLeaderElection() bool {
+	return true
+}
+
 // Start runs the goroutine to perform status writes.
-// Until the Contour is elected leader, will drop updates on the floor.
-func (suh *StatusUpdateHandler) Start(stop <-chan struct{}) error {
+func (suh *StatusUpdateHandler) Start(ctx context.Context) error {
+	suh.log.Info("started status update handler")
+	defer suh.log.Info("stopped status update handler")
+
+	// Enable StatusUpdaters to start sending updates to this handler.
+	close(suh.sendUpdates)
+
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return nil
-		case <-suh.LeaderElected:
-			suh.Log.Info("elected leader")
-			suh.IsLeader = true
-			// disable this case
-			suh.LeaderElected = nil
-		case upd := <-suh.UpdateChannel:
-			if !suh.IsLeader {
-				suh.Log.WithField("name", upd.NamespacedName.Name).
-					WithField("namespace", upd.NamespacedName.Namespace).
-					Debug("not leader, not applying update")
-				continue
-			}
-
-			suh.Log.WithField("name", upd.NamespacedName.Name).
+		case upd := <-suh.updateChannel:
+			suh.log.WithField("name", upd.NamespacedName.Name).
 				WithField("namespace", upd.NamespacedName.Namespace).
 				Debug("received a status update")
 
 			suh.apply(upd)
 		}
-
 	}
-
 }
 
 // Writer retrieves the interface that should be used to write to the StatusUpdateHandler.
 func (suh *StatusUpdateHandler) Writer() StatusUpdater {
-	if suh.UpdateChannel == nil {
-		suh.UpdateChannel = make(chan StatusUpdate, 100)
-	}
-
 	return &StatusUpdateWriter{
-		UpdateChannel: suh.UpdateChannel,
+		enabled:       suh.sendUpdates,
+		updateChannel: suh.updateChannel,
 	}
 }
 
@@ -187,10 +179,16 @@ type StatusUpdater interface {
 
 // StatusUpdateWriter takes status updates and sends these to the StatusUpdateHandler via a channel.
 type StatusUpdateWriter struct {
-	UpdateChannel chan StatusUpdate
+	enabled       <-chan struct{}
+	updateChannel chan<- StatusUpdate
 }
 
 // Send sends the given StatusUpdate off to the update channel for writing by the StatusUpdateHandler.
 func (suw *StatusUpdateWriter) Send(update StatusUpdate) {
-	suw.UpdateChannel <- update
+	// Non-blocking receive to see if we should pass along update.
+	select {
+	case <-suw.enabled:
+		suw.updateChannel <- update
+	default:
+	}
 }

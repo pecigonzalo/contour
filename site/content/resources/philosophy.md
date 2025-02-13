@@ -61,7 +61,7 @@ More often than not, the discussion sparked by the desire to change a particular
 ### Limited feature scope
 
 The Contour project has a well defined scope: a reverse proxy implementation for HTTP workloads on Kubernetes clusters.
-Contour’s limited support for TCP proxying is intended solely for Contour to to support web applications which desire to handle TLS directly.
+Contour’s limited support for TCP proxying is intended solely for Contour to support web applications which desire to handle TLS directly.
 
 ### Every feature is supportable by the application developer or cluster administrator
 
@@ -77,17 +77,21 @@ When designing Kubernetes objects, we try to expose information as close as poss
 For example, we will ensure that HTTPProxy objects have status conditions that tell the user that created them if there is a problem, rather than just logging that information from Contour itself.
 
 ### We meet users where they are
-Contour currently supports Ingress v1 and HTTPProxy and we are working on supporting the Kubernetes Gateway API.
+Contour currently supports Ingress, HTTPProxy and the Kubernetes Gateway API.
 We don’t ask users to choose which ingress API they want to use, instead we will consider providing support for any requested types to meet users wherever they are.
 
 This goal is in conflict with the goal of a minimum surface area, but we realize that channeling all our users to an API which is only implemented in Contour is bad for their interoperability and limits our total addressable market.
 The idea for this goal is that we will thoughtfully consider new ingress types as they become available, and add them in if we believe it is a good idea.
 
-By closely tracking the Ingress v1 and Gateway API specifications we actively contribute to the broader Kubernetes community as early adopters.
+By closely tracking the Ingress and Gateway API specifications we actively contribute to the broader Kubernetes community as early adopters.
 
 ## Our pledge to our users
 
 We promise that:
-- We will treat all your interactions with us in accordance with our Code of Conduct.
+- We will treat all your interactions with us in accordance with our [Code of Conduct][1].
 - We will consider each request on its merits.
 - In the event that we cannot accommodate a request, we will provide a reasonable explanation, with reference to the principles embodied in this document.
+  
+
+[1]: https://github.com/projectcontour/contour/blob/main/CODE_OF_CONDUCT.md
+

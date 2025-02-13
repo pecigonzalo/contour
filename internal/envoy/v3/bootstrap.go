@@ -24,23 +24,32 @@ import (
 	"strings"
 	"time"
 
-	envoy_bootstrap_v3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
-	envoy_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	envoy_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
-	envoy_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	envoy_config_accesslog_v3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
+	envoy_config_bootstrap_v3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
+	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	envoy_config_overload_v3 "github.com/envoyproxy/go-control-plane/envoy/config/overload/v3"
+	envoy_access_logger_file_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/file/v3"
+	envoy_regex_engines_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/regex_engines/v3"
+	envoy_fixed_heap_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/resource_monitors/fixed_heap/v3"
+	envoy_transport_socket_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
-	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes/any"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
 	"github.com/projectcontour/contour/internal/envoy"
 	"github.com/projectcontour/contour/internal/protobuf"
+	"github.com/projectcontour/contour/internal/timeout"
 )
 
 // WriteBootstrap writes bootstrap configuration to files.
-func WriteBootstrap(c *envoy.BootstrapConfig) error {
+func (e *EnvoyGen) WriteBootstrap(c *envoy.BootstrapConfig) error {
 	// Create Envoy bootstrap config and associated resource files.
-	steps, err := bootstrap(c)
+	steps, err := e.bootstrap(c)
 	if err != nil {
 		return err
 	}
@@ -50,7 +59,7 @@ func WriteBootstrap(c *envoy.BootstrapConfig) error {
 		// Refer Issue: https://github.com/projectcontour/contour/issues/3264
 		// The secrets in this directory are "pointers" to actual secrets
 		// mounted from Kubernetes secrets; that means the actual secrets aren't 0777
-		if err := os.MkdirAll(path.Join(c.ResourcesDir, "sds"), 0777); err != nil {
+		if err := os.MkdirAll(path.Join(c.ResourcesDir, "sds"), 0o777); err != nil {
 			return err
 		}
 	}
@@ -68,13 +77,13 @@ func WriteBootstrap(c *envoy.BootstrapConfig) error {
 type bootstrapf func(*envoy.BootstrapConfig) (string, proto.Message)
 
 // bootstrap creates a new v3 bootstrap configuration and associated resource files.
-func bootstrap(c *envoy.BootstrapConfig) ([]bootstrapf, error) {
+func (e *EnvoyGen) bootstrap(c *envoy.BootstrapConfig) ([]bootstrapf, error) {
 	var steps []bootstrapf
 
 	if c.GrpcClientCert == "" && c.GrpcClientKey == "" && c.GrpcCABundle == "" {
 		steps = append(steps,
 			func(*envoy.BootstrapConfig) (string, proto.Message) {
-				return c.Path, bootstrapConfig(c)
+				return c.Path, e.bootstrapConfig(c)
 			})
 
 		return steps, nil
@@ -113,7 +122,7 @@ func bootstrap(c *envoy.BootstrapConfig) ([]bootstrapf, error) {
 
 		steps = append(steps,
 			func(*envoy.BootstrapConfig) (string, proto.Message) {
-				b := bootstrapConfig(c)
+				b := e.bootstrapConfig(c)
 				b.StaticResources.Clusters[0].TransportSocket = UpstreamTLSTransportSocket(
 					upstreamFileTLSContext(c))
 				return c.Path, b
@@ -141,7 +150,7 @@ func bootstrap(c *envoy.BootstrapConfig) ([]bootstrapf, error) {
 			return sdsValidationContextPath, validationContextSdsSecretConfig(c)
 		},
 		func(*envoy.BootstrapConfig) (string, proto.Message) {
-			b := bootstrapConfig(c)
+			b := e.bootstrapConfig(c)
 			b.StaticResources.Clusters[0].TransportSocket = UpstreamTLSTransportSocket(
 				upstreamSdsTLSContext(sdsTLSCertificatePath, sdsValidationContextPath))
 			return c.Path, b
@@ -151,97 +160,193 @@ func bootstrap(c *envoy.BootstrapConfig) ([]bootstrapf, error) {
 	return steps, nil
 }
 
-func bootstrapConfig(c *envoy.BootstrapConfig) *envoy_bootstrap_v3.Bootstrap {
-	return &envoy_bootstrap_v3.Bootstrap{
-		DynamicResources: &envoy_bootstrap_v3.Bootstrap_DynamicResources{
-			LdsConfig: ConfigSource("contour"),
-			CdsConfig: ConfigSource("contour"),
+func (e *EnvoyGen) bootstrapConfig(c *envoy.BootstrapConfig) *envoy_config_bootstrap_v3.Bootstrap {
+	bootstrap := &envoy_config_bootstrap_v3.Bootstrap{
+		LayeredRuntime: &envoy_config_bootstrap_v3.LayeredRuntime{
+			Layers: []*envoy_config_bootstrap_v3.RuntimeLayer{
+				{
+					Name: "dynamic",
+					LayerSpecifier: &envoy_config_bootstrap_v3.RuntimeLayer_RtdsLayer_{
+						RtdsLayer: &envoy_config_bootstrap_v3.RuntimeLayer_RtdsLayer{
+							Name:       DynamicRuntimeLayerName,
+							RtdsConfig: e.GetConfigSource(),
+						},
+					},
+				},
+				// Admin layer needs to be included here to maintain ability to
+				// modify runtime settings via admin console. We have it as the
+				// last layer so changes made via admin console override any
+				// settings from previous layers.
+				// See https://www.envoyproxy.io/docs/envoy/latest/configuration/operations/runtime#admin-console
+				{
+					Name: "admin",
+					LayerSpecifier: &envoy_config_bootstrap_v3.RuntimeLayer_AdminLayer_{
+						AdminLayer: &envoy_config_bootstrap_v3.RuntimeLayer_AdminLayer{},
+					},
+				},
+			},
 		},
-		StaticResources: &envoy_bootstrap_v3.Bootstrap_StaticResources{
-			Clusters: []*envoy_cluster_v3.Cluster{{
+		DynamicResources: &envoy_config_bootstrap_v3.Bootstrap_DynamicResources{
+			LdsConfig: e.GetConfigSource(),
+			CdsConfig: e.GetConfigSource(),
+		},
+		StaticResources: &envoy_config_bootstrap_v3.Bootstrap_StaticResources{
+			Clusters: []*envoy_config_cluster_v3.Cluster{{
 				DnsLookupFamily:      parseDNSLookupFamily(c.DNSLookupFamily),
 				Name:                 "contour",
 				AltStatName:          strings.Join([]string{c.Namespace, "contour", strconv.Itoa(c.GetXdsGRPCPort())}, "_"),
-				ConnectTimeout:       protobuf.Duration(5 * time.Second),
-				ClusterDiscoveryType: ClusterDiscoveryTypeForAddress(c.GetXdsAddress(), envoy_cluster_v3.Cluster_STRICT_DNS),
-				LbPolicy:             envoy_cluster_v3.Cluster_ROUND_ROBIN,
-				LoadAssignment: &envoy_endpoint_v3.ClusterLoadAssignment{
+				ConnectTimeout:       durationpb.New(5 * time.Second),
+				ClusterDiscoveryType: clusterDiscoveryTypeForAddress(c.GetXdsAddress(), envoy_config_cluster_v3.Cluster_STRICT_DNS),
+				LbPolicy:             envoy_config_cluster_v3.Cluster_ROUND_ROBIN,
+				LoadAssignment: &envoy_config_endpoint_v3.ClusterLoadAssignment{
 					ClusterName: "contour",
 					Endpoints: Endpoints(
 						SocketAddress(c.GetXdsAddress(), c.GetXdsGRPCPort()),
 					),
 				},
-				UpstreamConnectionOptions: &envoy_cluster_v3.UpstreamConnectionOptions{
-					TcpKeepalive: &envoy_core_v3.TcpKeepalive{
-						KeepaliveProbes:   protobuf.UInt32(3),
-						KeepaliveTime:     protobuf.UInt32(30),
-						KeepaliveInterval: protobuf.UInt32(5),
+				UpstreamConnectionOptions: &envoy_config_cluster_v3.UpstreamConnectionOptions{
+					TcpKeepalive: &envoy_config_core_v3.TcpKeepalive{
+						KeepaliveProbes:   wrapperspb.UInt32(3),
+						KeepaliveTime:     wrapperspb.UInt32(30),
+						KeepaliveInterval: wrapperspb.UInt32(5),
 					},
 				},
-				TypedExtensionProtocolOptions: http2ProtocolOptions(),
-				CircuitBreakers: &envoy_cluster_v3.CircuitBreakers{
-					Thresholds: []*envoy_cluster_v3.CircuitBreakers_Thresholds{{
-						Priority:           envoy_core_v3.RoutingPriority_HIGH,
-						MaxConnections:     protobuf.UInt32(100000),
-						MaxPendingRequests: protobuf.UInt32(100000),
-						MaxRequests:        protobuf.UInt32(60000000),
-						MaxRetries:         protobuf.UInt32(50),
+				TypedExtensionProtocolOptions: protocolOptions(HTTPVersion2, timeout.DefaultSetting(), nil),
+				CircuitBreakers: &envoy_config_cluster_v3.CircuitBreakers{
+					Thresholds: []*envoy_config_cluster_v3.CircuitBreakers_Thresholds{{
+						Priority:           envoy_config_core_v3.RoutingPriority_HIGH,
+						MaxConnections:     wrapperspb.UInt32(100000),
+						MaxPendingRequests: wrapperspb.UInt32(100000),
+						MaxRequests:        wrapperspb.UInt32(60000000),
+						MaxRetries:         wrapperspb.UInt32(50),
+						TrackRemaining:     true,
 					}, {
-						Priority:           envoy_core_v3.RoutingPriority_DEFAULT,
-						MaxConnections:     protobuf.UInt32(100000),
-						MaxPendingRequests: protobuf.UInt32(100000),
-						MaxRequests:        protobuf.UInt32(60000000),
-						MaxRetries:         protobuf.UInt32(50),
+						Priority:           envoy_config_core_v3.RoutingPriority_DEFAULT,
+						MaxConnections:     wrapperspb.UInt32(100000),
+						MaxPendingRequests: wrapperspb.UInt32(100000),
+						MaxRequests:        wrapperspb.UInt32(60000000),
+						MaxRetries:         wrapperspb.UInt32(50),
+						TrackRemaining:     true,
 					}},
 				},
 			}, {
 				Name:                 "envoy-admin",
 				AltStatName:          strings.Join([]string{c.Namespace, "envoy-admin", strconv.Itoa(c.GetAdminPort())}, "_"),
-				ConnectTimeout:       protobuf.Duration(250 * time.Millisecond),
-				ClusterDiscoveryType: ClusterDiscoveryTypeForAddress(c.GetAdminAddress(), envoy_cluster_v3.Cluster_STATIC),
-				LbPolicy:             envoy_cluster_v3.Cluster_ROUND_ROBIN,
-				LoadAssignment: &envoy_endpoint_v3.ClusterLoadAssignment{
+				ConnectTimeout:       durationpb.New(250 * time.Millisecond),
+				ClusterDiscoveryType: clusterDiscoveryTypeForAddress(c.GetAdminAddress(), envoy_config_cluster_v3.Cluster_STATIC),
+				LbPolicy:             envoy_config_cluster_v3.Cluster_ROUND_ROBIN,
+				LoadAssignment: &envoy_config_endpoint_v3.ClusterLoadAssignment{
 					ClusterName: "envoy-admin",
 					Endpoints: Endpoints(
-						UnixSocketAddress(c.GetAdminAddress(), c.GetAdminPort()),
+						unixSocketAddress(c.GetAdminAddress()),
 					),
 				},
 			}},
 		},
-		Admin: &envoy_bootstrap_v3.Admin{
-			AccessLogPath: c.GetAdminAccessLogPath(),
-			Address:       UnixSocketAddress(c.GetAdminAddress(), c.GetAdminPort()),
+		DefaultRegexEngine: &envoy_config_core_v3.TypedExtensionConfig{
+			Name:        "envoy.regex_engines.google_re2",
+			TypedConfig: protobuf.MustMarshalAny(&envoy_regex_engines_v3.GoogleRE2{}),
+		},
+		Admin: &envoy_config_bootstrap_v3.Admin{
+			AccessLog: adminAccessLog(c.GetAdminAccessLogPath()),
+			Address:   unixSocketAddress(c.GetAdminAddress()),
+		},
+	}
+	if c.MaximumHeapSizeBytes > 0 {
+		bootstrap.OverloadManager = &envoy_config_overload_v3.OverloadManager{
+			RefreshInterval: durationpb.New(250 * time.Millisecond),
+			ResourceMonitors: []*envoy_config_overload_v3.ResourceMonitor{
+				{
+					Name: "envoy.resource_monitors.fixed_heap",
+					ConfigType: &envoy_config_overload_v3.ResourceMonitor_TypedConfig{
+						TypedConfig: protobuf.MustMarshalAny(
+							&envoy_fixed_heap_v3.FixedHeapConfig{
+								MaxHeapSizeBytes: c.MaximumHeapSizeBytes,
+							}),
+					},
+				},
+			},
+			Actions: []*envoy_config_overload_v3.OverloadAction{
+				{
+					Name: "envoy.overload_actions.shrink_heap",
+					Triggers: []*envoy_config_overload_v3.Trigger{
+						{
+							Name: "envoy.resource_monitors.fixed_heap",
+							TriggerOneof: &envoy_config_overload_v3.Trigger_Threshold{
+								Threshold: &envoy_config_overload_v3.ThresholdTrigger{
+									Value: 0.95,
+								},
+							},
+						},
+					},
+				},
+				{
+					Name: "envoy.overload_actions.stop_accepting_requests",
+					Triggers: []*envoy_config_overload_v3.Trigger{
+						{
+							Name: "envoy.resource_monitors.fixed_heap",
+							TriggerOneof: &envoy_config_overload_v3.Trigger_Threshold{
+								Threshold: &envoy_config_overload_v3.ThresholdTrigger{
+									Value: 0.98,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	return bootstrap
+}
+
+func adminAccessLog(logPath string) []*envoy_config_accesslog_v3.AccessLog {
+	return []*envoy_config_accesslog_v3.AccessLog{
+		{
+			Name: "envoy.access_loggers.file",
+			ConfigType: &envoy_config_accesslog_v3.AccessLog_TypedConfig{
+				TypedConfig: protobuf.MustMarshalAny(&envoy_access_logger_file_v3.FileAccessLog{
+					Path: logPath,
+				}),
+			},
 		},
 	}
 }
 
-func upstreamFileTLSContext(c *envoy.BootstrapConfig) *envoy_tls_v3.UpstreamTlsContext {
-	context := &envoy_tls_v3.UpstreamTlsContext{
-		CommonTlsContext: &envoy_tls_v3.CommonTlsContext{
-			TlsCertificates: []*envoy_tls_v3.TlsCertificate{{
-				CertificateChain: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_Filename{
+func upstreamFileTLSContext(c *envoy.BootstrapConfig) *envoy_transport_socket_tls_v3.UpstreamTlsContext {
+	context := &envoy_transport_socket_tls_v3.UpstreamTlsContext{
+		CommonTlsContext: &envoy_transport_socket_tls_v3.CommonTlsContext{
+			TlsParams: &envoy_transport_socket_tls_v3.TlsParameters{
+				TlsMaximumProtocolVersion: envoy_transport_socket_tls_v3.TlsParameters_TLSv1_3,
+			},
+			TlsCertificates: []*envoy_transport_socket_tls_v3.TlsCertificate{{
+				CertificateChain: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_Filename{
 						Filename: c.GrpcClientCert,
 					},
 				},
-				PrivateKey: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_Filename{
+				PrivateKey: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_Filename{
 						Filename: c.GrpcClientKey,
 					},
 				},
 			}},
-			ValidationContextType: &envoy_tls_v3.CommonTlsContext_ValidationContext{
-				ValidationContext: &envoy_tls_v3.CertificateValidationContext{
-					TrustedCa: &envoy_core_v3.DataSource{
-						Specifier: &envoy_core_v3.DataSource_Filename{
+			ValidationContextType: &envoy_transport_socket_tls_v3.CommonTlsContext_ValidationContext{
+				ValidationContext: &envoy_transport_socket_tls_v3.CertificateValidationContext{
+					TrustedCa: &envoy_config_core_v3.DataSource{
+						Specifier: &envoy_config_core_v3.DataSource_Filename{
 							Filename: c.GrpcCABundle,
 						},
 					},
 					// TODO(youngnick): Does there need to be a flag wired down to here?
-					MatchSubjectAltNames: []*envoy_matcher_v3.StringMatcher{{
-						MatchPattern: &envoy_matcher_v3.StringMatcher_Exact{
-							Exact: "contour",
-						}},
+					MatchTypedSubjectAltNames: []*envoy_transport_socket_tls_v3.SubjectAltNameMatcher{
+						{
+							SanType: envoy_transport_socket_tls_v3.SubjectAltNameMatcher_DNS,
+							Matcher: &envoy_matcher_v3.StringMatcher{
+								MatchPattern: &envoy_matcher_v3.StringMatcher_Exact{
+									Exact: "contour",
+								},
+							},
+						},
 					},
 				},
 			},
@@ -250,48 +355,54 @@ func upstreamFileTLSContext(c *envoy.BootstrapConfig) *envoy_tls_v3.UpstreamTlsC
 	return context
 }
 
-func upstreamSdsTLSContext(certificateSdsFile, validationSdsFile string) *envoy_tls_v3.UpstreamTlsContext {
-	context := &envoy_tls_v3.UpstreamTlsContext{
-		CommonTlsContext: &envoy_tls_v3.CommonTlsContext{
-			TlsCertificateSdsSecretConfigs: []*envoy_tls_v3.SdsSecretConfig{{
+func upstreamSdsTLSContext(certificateSdsFile, validationSdsFile string) *envoy_transport_socket_tls_v3.UpstreamTlsContext {
+	return &envoy_transport_socket_tls_v3.UpstreamTlsContext{
+		CommonTlsContext: &envoy_transport_socket_tls_v3.CommonTlsContext{
+			TlsParams: &envoy_transport_socket_tls_v3.TlsParameters{
+				TlsMaximumProtocolVersion: envoy_transport_socket_tls_v3.TlsParameters_TLSv1_3,
+			},
+			TlsCertificateSdsSecretConfigs: []*envoy_transport_socket_tls_v3.SdsSecretConfig{{
 				Name: "contour_xds_tls_certificate",
-				SdsConfig: &envoy_core_v3.ConfigSource{
-					ResourceApiVersion: envoy_core_v3.ApiVersion_V3,
-					ConfigSourceSpecifier: &envoy_core_v3.ConfigSource_Path{
-						Path: certificateSdsFile,
+				SdsConfig: &envoy_config_core_v3.ConfigSource{
+					ResourceApiVersion: envoy_config_core_v3.ApiVersion_V3,
+					ConfigSourceSpecifier: &envoy_config_core_v3.ConfigSource_PathConfigSource{
+						PathConfigSource: &envoy_config_core_v3.PathConfigSource{
+							Path: certificateSdsFile,
+						},
 					},
 				},
 			}},
-			ValidationContextType: &envoy_tls_v3.CommonTlsContext_ValidationContextSdsSecretConfig{
-				ValidationContextSdsSecretConfig: &envoy_tls_v3.SdsSecretConfig{
+			ValidationContextType: &envoy_transport_socket_tls_v3.CommonTlsContext_ValidationContextSdsSecretConfig{
+				ValidationContextSdsSecretConfig: &envoy_transport_socket_tls_v3.SdsSecretConfig{
 					Name: "contour_xds_tls_validation_context",
-					SdsConfig: &envoy_core_v3.ConfigSource{
-						ResourceApiVersion: envoy_core_v3.ApiVersion_V3,
-						ConfigSourceSpecifier: &envoy_core_v3.ConfigSource_Path{
-							Path: validationSdsFile,
+					SdsConfig: &envoy_config_core_v3.ConfigSource{
+						ResourceApiVersion: envoy_config_core_v3.ApiVersion_V3,
+						ConfigSourceSpecifier: &envoy_config_core_v3.ConfigSource_PathConfigSource{
+							PathConfigSource: &envoy_config_core_v3.PathConfigSource{
+								Path: validationSdsFile,
+							},
 						},
 					},
 				},
 			},
 		},
 	}
-	return context
 }
 
 // tlsCertificateSdsSecretConfig creates DiscoveryResponse with file based SDS resource
 // including paths to TLS certificates and key
 func tlsCertificateSdsSecretConfig(c *envoy.BootstrapConfig) *envoy_service_discovery_v3.DiscoveryResponse {
-	secret := &envoy_tls_v3.Secret{
+	secret := &envoy_transport_socket_tls_v3.Secret{
 		Name: "contour_xds_tls_certificate",
-		Type: &envoy_tls_v3.Secret_TlsCertificate{
-			TlsCertificate: &envoy_tls_v3.TlsCertificate{
-				CertificateChain: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_Filename{
+		Type: &envoy_transport_socket_tls_v3.Secret_TlsCertificate{
+			TlsCertificate: &envoy_transport_socket_tls_v3.TlsCertificate{
+				CertificateChain: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_Filename{
 						Filename: c.GrpcClientCert,
 					},
 				},
-				PrivateKey: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_Filename{
+				PrivateKey: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_Filename{
 						Filename: c.GrpcClientKey,
 					},
 				},
@@ -300,32 +411,37 @@ func tlsCertificateSdsSecretConfig(c *envoy.BootstrapConfig) *envoy_service_disc
 	}
 
 	return &envoy_service_discovery_v3.DiscoveryResponse{
-		Resources: []*any.Any{protobuf.MustMarshalAny(secret)},
+		Resources: []*anypb.Any{protobuf.MustMarshalAny(secret)},
 	}
 }
 
 // validationContextSdsSecretConfig creates DiscoveryResponse with file based SDS resource
 // including path to CA certificate bundle
 func validationContextSdsSecretConfig(c *envoy.BootstrapConfig) *envoy_service_discovery_v3.DiscoveryResponse {
-	secret := &envoy_tls_v3.Secret{
+	secret := &envoy_transport_socket_tls_v3.Secret{
 		Name: "contour_xds_tls_validation_context",
-		Type: &envoy_tls_v3.Secret_ValidationContext{
-			ValidationContext: &envoy_tls_v3.CertificateValidationContext{
-				TrustedCa: &envoy_core_v3.DataSource{
-					Specifier: &envoy_core_v3.DataSource_Filename{
+		Type: &envoy_transport_socket_tls_v3.Secret_ValidationContext{
+			ValidationContext: &envoy_transport_socket_tls_v3.CertificateValidationContext{
+				TrustedCa: &envoy_config_core_v3.DataSource{
+					Specifier: &envoy_config_core_v3.DataSource_Filename{
 						Filename: c.GrpcCABundle,
 					},
 				},
-				MatchSubjectAltNames: []*envoy_matcher_v3.StringMatcher{{
-					MatchPattern: &envoy_matcher_v3.StringMatcher_Exact{
-						Exact: "contour",
-					}},
+				MatchTypedSubjectAltNames: []*envoy_transport_socket_tls_v3.SubjectAltNameMatcher{
+					{
+						SanType: envoy_transport_socket_tls_v3.SubjectAltNameMatcher_DNS,
+						Matcher: &envoy_matcher_v3.StringMatcher{
+							MatchPattern: &envoy_matcher_v3.StringMatcher_Exact{
+								Exact: "contour",
+							},
+						},
+					},
 				},
 			},
 		},
 	}
 
 	return &envoy_service_discovery_v3.DiscoveryResponse{
-		Resources: []*any.Any{protobuf.MustMarshalAny(secret)},
+		Resources: []*anypb.Any{protobuf.MustMarshalAny(secret)},
 	}
 }

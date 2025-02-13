@@ -24,6 +24,10 @@ import (
 )
 
 // Clustername returns the name of the CDS cluster for this service.
+//
+// Note: Cluster name is used to deduplicate clusters.
+// When for example two HTTPProxies result in Clusters with equal name, only single cluster will be configured to Envoy.
+// Therefore the generated name must contain all relevant fields that make the cluster unique.
 func Clustername(cluster *dag.Cluster) string {
 	service := cluster.Upstream
 	buf := cluster.LoadBalancerPolicy
@@ -43,8 +47,19 @@ func Clustername(cluster *dag.Cluster) string {
 		buf += hc.Path
 	}
 	if uv := cluster.UpstreamValidation; uv != nil {
-		buf += uv.CACertificate.Object.ObjectMeta.Name
-		buf += uv.SubjectName
+		if len(uv.CACertificates) > 0 {
+			buf += uv.CACertificates[0].Object.ObjectMeta.Name
+		}
+		if len(uv.SubjectNames) > 0 {
+			buf += uv.SubjectNames[0]
+		}
+	}
+	buf += cluster.Protocol + cluster.SNI
+	if !cluster.TimeoutPolicy.IdleConnectionTimeout.UseDefault() {
+		buf += cluster.TimeoutPolicy.IdleConnectionTimeout.Duration().String()
+	}
+	if cluster.SlowStartConfig != nil {
+		buf += cluster.SlowStartConfig.String()
 	}
 
 	// This isn't a crypto hash, we just want a unique name.
@@ -103,13 +118,6 @@ func truncate(l int, s, suffix string) string {
 	return s[:l-len(suffix)-1] + "-" + suffix
 }
 
-func min(a, b int) int {
-	if a > b {
-		return b
-	}
-	return a
-}
-
 // AnyPositive indicates if any of the values provided are greater than zero.
 func AnyPositive(first uint32, rest ...uint32) bool {
 	if first > 0 {
@@ -121,4 +129,8 @@ func AnyPositive(first uint32, rest ...uint32) bool {
 		}
 	}
 	return false
+}
+
+func DNSNameClusterName(cluster *dag.DNSNameCluster) string {
+	return strings.Join([]string{"dnsname", cluster.Scheme, cluster.Address}, "/")
 }

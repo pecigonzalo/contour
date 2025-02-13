@@ -17,34 +17,34 @@ import (
 	"testing"
 	"time"
 
-	envoy_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	envoy_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
-	envoy_config_filter_http_local_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/local_ratelimit/v3"
-	envoy_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_filter_http_local_ratelimit_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/local_ratelimit/v3"
+	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_type_v3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	core_v1 "k8s.io/api/core/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/fixture"
-	"github.com/projectcontour/contour/internal/protobuf"
-	"google.golang.org/protobuf/types/known/wrapperspb"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/cache"
 )
 
-func filterExists(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func filterExists(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
@@ -56,7 +56,7 @@ func filterExists(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
 	}
 	rh.OnAdd(p)
 
-	c.Request(listenerType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(listenerType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: listenerType,
 		Resources: resources(t,
 			defaultHTTPListener(),
@@ -64,19 +64,19 @@ func filterExists(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
 	}).Status(p).IsValid()
 }
 
-func noRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func noRateLimitsDefined(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
@@ -88,13 +88,13 @@ func noRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour
 	}
 	rh.OnAdd(p)
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration(
 				"ingress_http",
 				envoy_v3.VirtualHost("foo.com",
-					&envoy_route_v3.Route{
+					&envoy_config_route_v3.Route{
 						Match:  routePrefix("/"),
 						Action: routeCluster("default/s1/80/da39a3ee5e"),
 					},
@@ -104,26 +104,26 @@ func noRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour
 	}).Status(p).IsValid()
 }
 
-func vhostRateLimitDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func vhostRateLimitDefined(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
-				RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-					Local: &contour_api_v1.LocalRateLimitPolicy{
+				RateLimitPolicy: &contour_v1.RateLimitPolicy{
+					Local: &contour_v1.LocalRateLimitPolicy{
 						Requests: 100,
 						Unit:     "minute",
 						Burst:    50,
 					},
 				},
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
@@ -136,25 +136,25 @@ func vhostRateLimitDefined(t *testing.T, rh cache.ResourceEventHandler, c *Conto
 	rh.OnAdd(p)
 
 	vhost := envoy_v3.VirtualHost("foo.com",
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/"),
 			Action: routeCluster("default/s1/80/da39a3ee5e"),
 		})
-	vhost.TypedPerFilterConfig = withFilterConfig("envoy.filters.http.local_ratelimit",
-		&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+	vhost.TypedPerFilterConfig = withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+		&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 			StatPrefix: "vhost.foo.com",
 			TokenBucket: &envoy_type_v3.TokenBucket{
 				MaxTokens:     150,
-				TokensPerFill: protobuf.UInt32(100),
-				FillInterval:  protobuf.Duration(time.Minute),
+				TokensPerFill: wrapperspb.UInt32(100),
+				FillInterval:  durationpb.New(time.Minute),
 			},
-			FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+			FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 				DefaultValue: &envoy_type_v3.FractionalPercent{
 					Numerator:   100,
 					Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 				},
 			},
-			FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+			FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 				DefaultValue: &envoy_type_v3.FractionalPercent{
 					Numerator:   100,
 					Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -162,38 +162,38 @@ func vhostRateLimitDefined(t *testing.T, rh cache.ResourceEventHandler, c *Conto
 			},
 		})
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http", vhost)),
 	}).Status(p).IsValid()
 }
 
-func routeRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func routeRateLimitsDefined(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s1",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests: 100,
 							Unit:     "minute",
 							Burst:    50,
@@ -201,19 +201,19 @@ func routeRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Cont
 					},
 				},
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s2",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s2",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests: 5,
 							Unit:     "second",
 							Burst:    1,
@@ -228,24 +228,24 @@ func routeRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Cont
 	vhost := envoy_v3.VirtualHost("foo.com",
 		// note, order of routes is reversed here because route sorting of prefixes
 		// is reverse alphabetic.
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s2"),
 			Action: routeCluster("default/s2/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     6,
-						TokensPerFill: protobuf.UInt32(5),
-						FillInterval:  protobuf.Duration(time.Second),
+						TokensPerFill: wrapperspb.UInt32(5),
+						FillInterval:  durationpb.New(time.Second),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -253,24 +253,24 @@ func routeRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Cont
 					},
 				}),
 		},
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s1"),
 			Action: routeCluster("default/s1/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     150,
-						TokensPerFill: protobuf.UInt32(100),
-						FillInterval:  protobuf.Duration(time.Minute),
+						TokensPerFill: wrapperspb.UInt32(100),
+						FillInterval:  durationpb.New(time.Minute),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -280,45 +280,45 @@ func routeRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Cont
 		},
 	)
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http", vhost)),
 	}).Status(p).IsValid()
 }
 
-func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func vhostAndRouteRateLimitsDefined(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
-				RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-					Local: &contour_api_v1.LocalRateLimitPolicy{
+				RateLimitPolicy: &contour_v1.RateLimitPolicy{
+					Local: &contour_v1.LocalRateLimitPolicy{
 						Requests: 100,
 						Unit:     "minute",
 						Burst:    50,
 					},
 				},
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s1",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests: 100,
 							Unit:     "minute",
 							Burst:    50,
@@ -326,19 +326,19 @@ func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler,
 					},
 				},
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s2",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s2",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests: 5,
 							Unit:     "second",
 							Burst:    1,
@@ -353,24 +353,24 @@ func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler,
 	vhost := envoy_v3.VirtualHost("foo.com",
 		// note, order of routes is reversed here because route sorting of prefixes
 		// is reverse alphabetic.
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s2"),
 			Action: routeCluster("default/s2/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     6,
-						TokensPerFill: protobuf.UInt32(5),
-						FillInterval:  protobuf.Duration(time.Second),
+						TokensPerFill: wrapperspb.UInt32(5),
+						FillInterval:  durationpb.New(time.Second),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -378,24 +378,24 @@ func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler,
 					},
 				}),
 		},
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s1"),
 			Action: routeCluster("default/s1/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     150,
-						TokensPerFill: protobuf.UInt32(100),
-						FillInterval:  protobuf.Duration(time.Minute),
+						TokensPerFill: wrapperspb.UInt32(100),
+						FillInterval:  durationpb.New(time.Minute),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -405,21 +405,21 @@ func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler,
 		},
 	)
 
-	vhost.TypedPerFilterConfig = withFilterConfig("envoy.filters.http.local_ratelimit",
-		&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+	vhost.TypedPerFilterConfig = withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+		&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 			StatPrefix: "vhost.foo.com",
 			TokenBucket: &envoy_type_v3.TokenBucket{
 				MaxTokens:     150,
-				TokensPerFill: protobuf.UInt32(100),
-				FillInterval:  protobuf.Duration(time.Minute),
+				TokensPerFill: wrapperspb.UInt32(100),
+				FillInterval:  durationpb.New(time.Minute),
 			},
-			FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+			FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 				DefaultValue: &envoy_type_v3.FractionalPercent{
 					Numerator:   100,
 					Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 				},
 			},
-			FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+			FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 				DefaultValue: &envoy_type_v3.FractionalPercent{
 					Numerator:   100,
 					Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -427,38 +427,38 @@ func vhostAndRouteRateLimitsDefined(t *testing.T, rh cache.ResourceEventHandler,
 			},
 		})
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http", vhost)),
 	}).Status(p).IsValid()
 }
 
-func customResponseCode(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func customResponseCode(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s1",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests:           100,
 							Unit:               "minute",
 							Burst:              50,
@@ -472,24 +472,24 @@ func customResponseCode(t *testing.T, rh cache.ResourceEventHandler, c *Contour)
 	rh.OnAdd(p)
 
 	vhost := envoy_v3.VirtualHost("foo.com",
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s1"),
 			Action: routeCluster("default/s1/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     150,
-						TokensPerFill: protobuf.UInt32(100),
-						FillInterval:  protobuf.Duration(time.Minute),
+						TokensPerFill: wrapperspb.UInt32(100),
+						FillInterval:  durationpb.New(time.Minute),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
@@ -500,42 +500,42 @@ func customResponseCode(t *testing.T, rh cache.ResourceEventHandler, c *Contour)
 		},
 	)
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http", vhost)),
 	}).Status(p).IsValid()
 }
 
-func customResponseHeaders(t *testing.T, rh cache.ResourceEventHandler, c *Contour) {
-	p := &contour_api_v1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
+func customResponseHeaders(t *testing.T, rh ResourceEventHandlerWrapper, c *Contour) {
+	p := &contour_v1.HTTPProxy{
+		ObjectMeta: meta_v1.ObjectMeta{
 			Namespace: "default",
 			Name:      "proxy1",
 		},
-		Spec: contour_api_v1.HTTPProxySpec{
-			VirtualHost: &contour_api_v1.VirtualHost{
+		Spec: contour_v1.HTTPProxySpec{
+			VirtualHost: &contour_v1.VirtualHost{
 				Fqdn: "foo.com",
 			},
-			Routes: []contour_api_v1.Route{
+			Routes: []contour_v1.Route{
 				{
-					Conditions: []contour_api_v1.MatchCondition{
+					Conditions: []contour_v1.MatchCondition{
 						{
 							Prefix: "/s1",
 						},
 					},
-					Services: []contour_api_v1.Service{
+					Services: []contour_v1.Service{
 						{
 							Name: "s1",
 							Port: 80,
 						},
 					},
-					RateLimitPolicy: &contour_api_v1.RateLimitPolicy{
-						Local: &contour_api_v1.LocalRateLimitPolicy{
+					RateLimitPolicy: &contour_v1.RateLimitPolicy{
+						Local: &contour_v1.LocalRateLimitPolicy{
 							Requests: 100,
 							Unit:     "minute",
 							Burst:    50,
-							ResponseHeadersToAdd: []contour_api_v1.HeaderValue{
+							ResponseHeadersToAdd: []contour_v1.HeaderValue{
 								{
 									Name:  "header-name-1",
 									Value: "header-value-1",
@@ -558,61 +558,61 @@ func customResponseHeaders(t *testing.T, rh cache.ResourceEventHandler, c *Conto
 	rh.OnAdd(p)
 
 	vhost := envoy_v3.VirtualHost("foo.com",
-		&envoy_route_v3.Route{
+		&envoy_config_route_v3.Route{
 			Match:  routePrefix("/s1"),
 			Action: routeCluster("default/s1/80/da39a3ee5e"),
-			TypedPerFilterConfig: withFilterConfig("envoy.filters.http.local_ratelimit",
-				&envoy_config_filter_http_local_ratelimit_v3.LocalRateLimit{
+			TypedPerFilterConfig: withFilterConfig(envoy_v3.LocalRateLimitFilterName,
+				&envoy_filter_http_local_ratelimit_v3.LocalRateLimit{
 					StatPrefix: "vhost.foo.com",
 					TokenBucket: &envoy_type_v3.TokenBucket{
 						MaxTokens:     150,
-						TokensPerFill: protobuf.UInt32(100),
-						FillInterval:  protobuf.Duration(time.Minute),
+						TokensPerFill: wrapperspb.UInt32(100),
+						FillInterval:  durationpb.New(time.Minute),
 					},
-					FilterEnabled: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnabled: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					FilterEnforced: &envoy_core_v3.RuntimeFractionalPercent{
+					FilterEnforced: &envoy_config_core_v3.RuntimeFractionalPercent{
 						DefaultValue: &envoy_type_v3.FractionalPercent{
 							Numerator:   100,
 							Denominator: envoy_type_v3.FractionalPercent_HUNDRED,
 						},
 					},
-					ResponseHeadersToAdd: []*envoy_core_v3.HeaderValueOption{
+					ResponseHeadersToAdd: []*envoy_config_core_v3.HeaderValueOption{
 						{
-							Header: &envoy_core_v3.HeaderValue{
+							Header: &envoy_config_core_v3.HeaderValue{
 								Key:   "Header-Name-1",
 								Value: "header-value-1",
 							},
-							Append: wrapperspb.Bool(false),
+							AppendAction: envoy_config_core_v3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 						},
 						// a valid Envoy var (%VARNAME%) should
 						// pass through as-is
 						{
-							Header: &envoy_core_v3.HeaderValue{
+							Header: &envoy_config_core_v3.HeaderValue{
 								Key:   "Header-Name-2",
 								Value: "%HOSTNAME%",
 							},
-							Append: wrapperspb.Bool(false),
+							AppendAction: envoy_config_core_v3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 						},
 						// a non-valid Envoy var should have its '%'
 						// symbols escaped
 						{
-							Header: &envoy_core_v3.HeaderValue{
+							Header: &envoy_config_core_v3.HeaderValue{
 								Key:   "Header-Name-3",
 								Value: "%%NON-ENVOY-VAR%%",
 							},
-							Append: wrapperspb.Bool(false),
+							AppendAction: envoy_config_core_v3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 						},
 					},
 				}),
 		},
 	)
 
-	c.Request(routeType).Equals(&envoy_discovery_v3.DiscoveryResponse{
+	c.Request(routeType).Equals(&envoy_service_discovery_v3.DiscoveryResponse{
 		TypeUrl: routeType,
 		Resources: resources(t,
 			envoy_v3.RouteConfiguration("ingress_http", vhost)),
@@ -620,7 +620,7 @@ func customResponseHeaders(t *testing.T, rh cache.ResourceEventHandler, c *Conto
 }
 
 func TestLocalRateLimiting(t *testing.T) {
-	subtests := map[string]func(*testing.T, cache.ResourceEventHandler, *Contour){
+	subtests := map[string]func(*testing.T, ResourceEventHandlerWrapper, *Contour){
 		"LocalRateLimitFilterExists":           filterExists,
 		"NoRateLimitsDefined":                  noRateLimitsDefined,
 		"VirtualHostRateLimitDefined":          vhostRateLimitDefined,
@@ -637,8 +637,8 @@ func TestLocalRateLimiting(t *testing.T) {
 			defer done()
 
 			// Add common test fixtures.
-			rh.OnAdd(fixture.NewService("s1").WithPorts(corev1.ServicePort{Port: 80}))
-			rh.OnAdd(fixture.NewService("s2").WithPorts(corev1.ServicePort{Port: 80}))
+			rh.OnAdd(fixture.NewService("s1").WithPorts(core_v1.ServicePort{Port: 80}))
+			rh.OnAdd(fixture.NewService("s2").WithPorts(core_v1.ServicePort{Port: 80}))
 
 			f(t, rh, c)
 		})

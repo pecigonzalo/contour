@@ -16,56 +16,83 @@ package main
 import (
 	"os"
 
+	"github.com/alecthomas/kingpin/v2"
 	resource_v3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"github.com/sirupsen/logrus"
+	"go.uber.org/automaxprocs/maxprocs"
+
 	"github.com/projectcontour/contour/internal/build"
 	"github.com/projectcontour/contour/internal/envoy"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/k8s"
-	"github.com/sirupsen/logrus"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 func main() {
 	log := logrus.StandardLogger()
 	k8s.InitLogging(k8s.LogWriterOption(log.WithField("context", "kubernetes")))
 
+	// set GOMAXPROCS
+	_, err := maxprocs.Set(maxprocs.Logger(log.Printf))
+	if err != nil {
+		log.WithError(err).Error("failed to set GOMAXPROCS")
+	}
+
+	// NOTE: when add a new subcommand, we'll have to remember to add it to 'TestOptionFlagsAreSorted'
+	// to ensure the option flags in lexicographic order.
+
 	app := kingpin.New("contour", "Contour Kubernetes ingress controller.")
 	app.HelpFlag.Short('h')
 
-	envoyCmd := app.Command("envoy", "Sub-command for envoy actions.")
-	sdm, shutdownManagerCtx := registerShutdownManager(envoyCmd, log)
+	// Log-format applies to log format of all sub-commands.
+	logFormat := app.Flag("log-format", "Log output format for Contour. Either text or json.").Default("text").Enum("text", "json")
 
 	bootstrap, bootstrapCtx := registerBootstrap(app)
 
-	// Add a "shutdown" command which initiates an Envoy shutdown sequence.
-	sdmShutdown, sdmShutdownCtx := registerShutdown(envoyCmd, log)
-
 	certgenApp, certgenConfig := registerCertGen(app)
 
-	cli := app.Command("cli", "A CLI client for the Contour Kubernetes ingress controller.")
-	var client Client
-	cli.Flag("contour", "Contour host:port.").Default("127.0.0.1:8001").StringVar(&client.ContourAddr)
-	cli.Flag("cafile", "CA bundle file for connecting to a TLS-secured Contour.").Envar("CLI_CAFILE").StringVar(&client.CAFile)
-	cli.Flag("cert-file", "Client certificate file for connecting to a TLS-secured Contour.").Envar("CLI_CERT_FILE").StringVar(&client.ClientCert)
-	cli.Flag("key-file", "Client key file for connecting to a TLS-secured Contour.").Envar("CLI_KEY_FILE").StringVar(&client.ClientKey)
+	cli, client := registerCli(app, log)
 
 	var resources []string
 	cds := cli.Command("cds", "Watch services.")
 	cds.Arg("resources", "CDS resource filter").StringsVar(&resources)
+
 	eds := cli.Command("eds", "Watch endpoints.")
 	eds.Arg("resources", "EDS resource filter").StringsVar(&resources)
+
 	lds := cli.Command("lds", "Watch listeners.")
 	lds.Arg("resources", "LDS resource filter").StringsVar(&resources)
+
 	rds := cli.Command("rds", "Watch routes.")
 	rds.Arg("resources", "RDS resource filter").StringsVar(&resources)
+
 	sds := cli.Command("sds", "Watch secrets.")
 	sds.Arg("resources", "SDS resource filter").StringsVar(&resources)
+
+	envoyCmd := app.Command("envoy", "Sub-command for envoy actions.")
+
+	// Add a "shutdown" command which initiates an Envoy shutdown sequence.
+	sdmShutdown, sdmShutdownCtx := registerShutdown(envoyCmd, log)
+
+	sdm, shutdownManagerCtx := registerShutdownManager(envoyCmd, log)
+
+	gatewayProvisioner, gatewayProvisionerConfig := registerGatewayProvisioner(app)
 
 	serve, serveCtx := registerServe(app)
 	version := app.Command("version", "Build information for Contour.")
 
 	args := os.Args[1:]
-	switch kingpin.MustParse(app.Parse(args)) {
+	cmd := kingpin.MustParse(app.Parse(args))
+
+	switch *logFormat {
+	case "text":
+		log.SetFormatter(&logrus.TextFormatter{})
+	case "json":
+		log.SetFormatter(&logrus.JSONFormatter{})
+	}
+
+	switch cmd {
+	case gatewayProvisioner.FullCommand():
+		runGatewayProvisioner(gatewayProvisionerConfig)
 	case sdm.FullCommand():
 		doShutdownManager(shutdownManagerCtx)
 	case sdmShutdown.FullCommand():
@@ -77,40 +104,68 @@ func main() {
 		if err := envoy.ValidAdminAddress(bootstrapCtx.AdminAddress); err != nil {
 			log.WithField("flag", "--admin-address").WithError(err).Fatal("failed to parse bootstrap args")
 		}
-		if err := envoy_v3.WriteBootstrap(bootstrapCtx); err != nil {
+		envoyGen := envoy_v3.NewEnvoyGen(envoy_v3.EnvoyGenOpt{
+			XDSClusterName: envoy_v3.DefaultXDSClusterName,
+		})
+		if err := envoyGen.WriteBootstrap(bootstrapCtx); err != nil {
 			log.WithError(err).Fatal("failed to write bootstrap configuration")
 		}
 	case certgenApp.FullCommand():
 		doCertgen(certgenConfig, log)
 	case cds.FullCommand():
-		stream := client.ClusterStream()
-		watchstream(stream, resource_v3.ClusterType, resources)
+		if client.Delta {
+			stream := client.DeltaClusterStream()
+			watchDeltaStream(log, stream, resource_v3.ClusterType, resources, client.Nack, client.NodeID)
+		} else {
+			stream := client.ClusterStream()
+			watchstream(log, stream, resource_v3.ClusterType, resources, client.Nack, client.NodeID)
+		}
 	case eds.FullCommand():
-		stream := client.EndpointStream()
-		watchstream(stream, resource_v3.EndpointType, resources)
+		if client.Delta {
+			stream := client.DeltaEndpointStream()
+			watchDeltaStream(log, stream, resource_v3.EndpointType, resources, client.Nack, client.NodeID)
+		} else {
+			stream := client.EndpointStream()
+			watchstream(log, stream, resource_v3.EndpointType, resources, client.Nack, client.NodeID)
+		}
 	case lds.FullCommand():
-		stream := client.ListenerStream()
-		watchstream(stream, resource_v3.ListenerType, resources)
+		if client.Delta {
+			stream := client.DeltaListenerStream()
+			watchDeltaStream(log, stream, resource_v3.ListenerType, resources, client.Nack, client.NodeID)
+		} else {
+			stream := client.ListenerStream()
+			watchstream(log, stream, resource_v3.ListenerType, resources, client.Nack, client.NodeID)
+		}
 	case rds.FullCommand():
-		stream := client.RouteStream()
-		watchstream(stream, resource_v3.RouteType, resources)
+		if client.Delta {
+			stream := client.DeltaRouteStream()
+			watchDeltaStream(log, stream, resource_v3.RouteType, resources, client.Nack, client.NodeID)
+		} else {
+			stream := client.RouteStream()
+			watchstream(log, stream, resource_v3.RouteType, resources, client.Nack, client.NodeID)
+		}
 	case sds.FullCommand():
-		stream := client.RouteStream()
-		watchstream(stream, resource_v3.SecretType, resources)
+		if client.Delta {
+			stream := client.DeltaRouteStream()
+			watchDeltaStream(log, stream, resource_v3.SecretType, resources, client.Nack, client.NodeID)
+		} else {
+			stream := client.RouteStream()
+			watchstream(log, stream, resource_v3.SecretType, resources, client.Nack, client.NodeID)
+		}
 	case serve.FullCommand():
 		// Parse args a second time so cli flags are applied
 		// on top of any values sourced from -c's config file.
 		kingpin.MustParse(app.Parse(args))
 
-		// Reinitialize with the target debug level.
-		k8s.InitLogging(
-			k8s.LogWriterOption(log.WithField("context", "kubernetes")),
-			k8s.LogLevelOption(int(serveCtx.KubernetesDebug)),
-		)
-
 		if serveCtx.Config.Debug {
 			log.SetLevel(logrus.DebugLevel)
 		}
+
+		// Reinitialize with the target debug level.
+		k8s.InitLogging(
+			k8s.LogWriterOption(log.WithField("context", "kubernetes")),
+			k8s.LogLevelOption(int(serveCtx.KubernetesDebug)), //nolint:gosec // disable G115
+		)
 
 		log.Infof("args: %v", args)
 
@@ -135,5 +190,4 @@ func main() {
 		app.Usage(args)
 		os.Exit(2)
 	}
-
 }

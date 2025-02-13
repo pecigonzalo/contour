@@ -24,7 +24,10 @@ set -o nounset
 readonly KIND=${KIND:-kind}
 readonly KUBECTL=${KUBECTL:-kubectl}
 
-readonly NODEIMAGE=${NODEIMAGE:-"docker.io/kindest/node:v1.22.0"}
+readonly MULTINODE_CLUSTER=${MULTINODE_CLUSTER:-"false"}
+readonly IPV6_CLUSTER=${IPV6_CLUSTER:-"false"}
+readonly SKIP_GATEWAY_API_INSTALL=${SKIP_GATEWAY_API_INSTALL:-"false"}
+readonly NODEIMAGE=${NODEIMAGE:-"docker.io/kindest/node:v1.32.0@sha256:c48c62eac5da28cdadcf560d1d8616cfa6783b58f0d94cf63ad1bf49600cb027"}
 readonly CLUSTERNAME=${CLUSTERNAME:-contour-e2e}
 readonly WAITTIME=${WAITTIME:-5m}
 
@@ -36,11 +39,18 @@ kind::cluster::exists() {
 }
 
 kind::cluster::create() {
+    local config_file="${REPO}/test/scripts/kind-expose-port.yaml"
+    if [[ "${MULTINODE_CLUSTER}" == "true" ]]; then
+        config_file="${REPO}/test/scripts/kind-multinode.yaml"
+    fi
+    if [[ "${IPV6_CLUSTER}" == "true" ]]; then
+        config_file="${REPO}/test/scripts/kind-ipv6.yaml"
+    fi
     ${KIND} create cluster \
         --name "${CLUSTERNAME}" \
         --image "${NODEIMAGE}" \
         --wait "${WAITTIME}" \
-        --config "${REPO}/test/scripts/kind-expose-port.yaml"
+        --config "${config_file}"
 }
 
 kind::cluster::load() {
@@ -62,25 +72,70 @@ if ! kind::cluster::exists "$CLUSTERNAME" ; then
   ${KUBECTL} version
 fi
 
-# Push test images into the cluster. Do this up-front
-# so that the first test to use each image does not 
-# incur the cost of pulling it. Helps avoid flakes.
-for i in $(find "$REPO/test/e2e" -name "fixtures.go" -print0 | xargs -0 awk '$1=="Image:"{print $2}')
-do
-    # The "$i" values will be formatted like: "<image>",
-    # So we need to strip the quotes and comma.
-    image="${i%,}"
-    image="${image%\"}"
-    image="${image#\"}"
+# Install metallb.
+${KUBECTL} apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.9/config/manifests/metallb-native.yaml
+${KUBECTL} wait --timeout="${WAITTIME}" -n metallb-system deployment/controller --for=condition=Available
 
-    docker pull "$image"
-    kind::cluster::load "$image"
+# Apply config with addresses based on docker network IPAM
+if [[ "${IPV6_CLUSTER}" == "true" ]]; then
+    subnet=$(docker network inspect kind | jq -r '.[].IPAM.Config[].Subnet | select(contains(":"))')
+    # Assume default kind network subnet prefix of 64, and choose addresses in that range.
+    address_first_blocks=$(echo ${subnet} | awk -F: '{printf "%s:%s:%s:%s",$1,$2,$3,$4}')
+    address_range="${address_first_blocks}:ffff:ffff:ffff::-${address_first_blocks}:ffff:ffff:ffff:003f"
+else
+    subnet=$(docker network inspect kind | jq -r '.[].IPAM.Config[].Subnet | select(contains(":") | not)')
+    # Assume default kind network subnet prefix of 16, and choose addresses in that range.
+    address_first_octets=$(echo ${subnet} | awk -F. '{printf "%s.%s",$1,$2}')
+    address_range="${address_first_octets}.255.200-${address_first_octets}.255.250"
+fi
+
+# Wrap application of metallb config in retry loop to minimize
+# flakes due to webhook not being ready.
+success=false
+for n in {1..60}; do
+if ${KUBECTL} apply -f - <<EOF
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  namespace: metallb-system
+  name: pool
+spec:
+  addresses:
+  - ${address_range}
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: pool-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - pool
+EOF
+then
+  success=true
+  break
+fi
+echo "Applying metallb configuration failed, retrying (${n} of 60)"
+sleep 1
 done
 
+if [ $success != "true" ]; then
+  echo "Applying metallb configuration failed"
+  exit 1
+fi
+
 # Install cert-manager.
-${KUBECTL} apply -f https://github.com/jetstack/cert-manager/releases/download/v1.5.1/cert-manager.yaml
+CERT_MANAGER_VERSION=$(go list -m all | grep github.com/cert-manager/cert-manager | awk '{print $2}')
+
+${KUBECTL} apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
 ${KUBECTL} wait --timeout="${WAITTIME}" -n cert-manager -l app=cert-manager deployments --for=condition=Available
 ${KUBECTL} wait --timeout="${WAITTIME}" -n cert-manager -l app=webhook deployments --for=condition=Available
 
-# Install Gateway API CRDs.
-${KUBECTL} apply -f "${REPO}/examples/gateway/00-crds.yaml"
+if [[ "${SKIP_GATEWAY_API_INSTALL}" != "true" ]]; then
+  # Install Gateway API CRDs.
+  ${KUBECTL} apply -f "${REPO}/examples/gateway/00-crds.yaml"
+fi
+
+# Install Contour CRDs.
+${KUBECTL} apply -f "${REPO}/examples/contour/01-crds.yaml"

@@ -2,7 +2,7 @@
 
 Thanks for taking the time to join our community and start contributing.
 These guidelines will help you get started with the Contour project.
-Please note that we require [DCO sign off](#dco-sign-off).  
+Please note that we require [DCO sign off](#dco-sign-off).
 
 Read this document for additional website specific guildlines: [Site Contribution Guidelines](/SITE_CONTRIBUTION.md).
 Guidelines in this document still apply to website contributions.
@@ -15,60 +15,142 @@ This section describes how to build Contour from source.
 
 ### Prerequisites
 
-1. *Install Go*
+1. Install Docker
 
-    Contour requires [Go 1.16][1] or later.
+    The easiest way to experiment with Contour is to build it in a container and run it locally in [kind](https://kind.sigs.k8s.io/) cluster.
+
+    On Mac, you can follow instructions to download and install [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+    On Linux, you can follow one of the installation methods provided by [Docker](https://docs.docker.com/desktop/install/linux-install/).
+
+2. Install tools: `git`, `make`, `gcc` (used by `go test -race`), [`kind`](https://kind.sigs.k8s.io/docs/user/quick-start/), `kubectl`, `jq` and `yq`
+
+    On Mac, the easiest, and recommended way, to get `git` and `make` is to install Xcode command line tools. To install Xcode command line tools run:
+
+    ```bash
+    xcode-select --install
+    ```
+
+    For some of the other tools, the recommended way is to use [homebrew](https://brew.sh/) to install them. Once brew is installed you can run:
+
+    ```bash
+    brew install kind kubectl jq yq
+    ```
+
+    On Ubuntu Linux, some of the above tools can be downloaded via the package manager:
+
+    ```bash
+    apt-get install build-essential git jq
+    ```
+
+    Reference the documentation of the various tools for installation instructions for your platform:
+
+    * kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
+    * kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installing-from-release-binaries
+    * yq: https://github.com/mikefarah/yq?tab=readme-ov-file#install
+
+3. Install Go
+
+    To debug locally and to run unit tests, you will need to install Go.
+    Contour generally uses the most recent minor [Go version][1].
+    Look in the `Makefile` (search for the `BUILD_BASE_IMAGE` variable) to find the specific version being used.
+
+    For installation instructions for Golang see: https://go.dev/doc/install
+
+    On Mac with homebrew, you can install Golang with:
+
+    ```bash
+    brew install go
+    ```
+
+4. (Optional for MacOS) [Docker Mac Net Connect](https://github.com/chipmk/docker-mac-net-connect) to connect directly to Docker-for-Mac containers via IP address.
+
+    See installation instructions [here](https://github.com/chipmk/docker-mac-net-connect?tab=readme-ov-file#installation)
 
 ### Fetch the source
 
-Contour uses [`go modules`][2] for dependency management.
+1. [Fork][3] the projectcontour/contour repository.
 
-1. [Fork][3] the repo
+2. Create a local clone:
 
-2. Create a local clone
+    ```
+    git clone git@github.com:YOUR-USERNAME/contour.git
+    ```
+    or
+    ```
+    git clone https://github.com:YOUR-USERNAME/contour
+    ```
 
-```
-git clone git@github.com:YOUR-USERNAME/contour.git
-```
+### Running your first build
 
-### Building
+To build the Contour binary:
 
-To build Contour, run:
-
-```
-make
-```
-
-This uses a `go install` and produces a `contour` binary in your `$GOPATH/bin` directory.
-
-
-### Running the unit tests
-
-Once you have Contour building, you can run all the unit tests for the project:
-
-```
-make check
+```shell
+go build ./cmd/contour
 ```
 
-To run the tests for a single package, change to package directory and run:
+### Running unit tests
 
+To run all of the unit tests:
+
+```shell
+go test ./...
 ```
+
+To run the tests for a single package, change to the package directory and run:
+
+```shell
 go test .
 ```
 
-### Lint
+### Deploying to a local kind cluster
 
-Before making a commit, it's always a good idea to check the code for common programming mistakes, misspellings and other potential errors. The lint checks can be run by invoking the make lint task:
+The simplest way to get up and running is to build Contour in a Docker container and to deploy it to a local Kind cluster.
+These commands will launch a Kind cluster and deploy your build of Contour to it.
 
 ```shell
-make lint
+make install-contour-working
 ```
 
-Note: The lint tasks require the [codespell](https://github.com/codespell-project/codespell) application. Be sure to install version 2.0 or newer before running the lint tasks.
+or for Contour Gateway Provisioner:
+
+```shell
+make install-provisioner-working
+```
+
+You can access Contour in localhost ports 9080 and 9443.
+
+To remove the Kind cluster and all resources, run:
+
+```shell
+make cleanup-kind
+```
+
+#### MacOS
+
+Both `install-contour-working` and `install-provisioner-working` configure [MetalLB](https://metallb.universe.tf/) to setup a local LoadBalancer Service that can be accessed on the Docker network.
+On Linux, you are able to directly reach IPs on the Docker network, but on MacOS the docker network is not directly accessible on the host.
+
+As a workaround to this problem, [Docker Mac Net Connect](https://github.com/chipmk/docker-mac-net-connect) can be installed to setup a tunnel between your host and the Docker Desktop Linux VM (see [here](https://github.com/chipmk/docker-mac-net-connect?tab=readme-ov-file#how-does-it-work) for more info on how this works).
+To setup follow the [readme installation instructions](https://github.com/chipmk/docker-mac-net-connect?tab=readme-ov-file#installation).
+
+Once it is setup, you are able to create the kind cluster using the above instructions. If you have issues with connecting to the MetalLB IP try to restart the Docker Engine or make sure there is an HTTProxy deployed on your kind cluster so the Contour listener is created.
+
+### Pre-submit checks
+
+To run all checks locally before submitting a pull request, run:
+
+```shell
+make checkall
+```
+
+This builds the binary, runs unit tests, runs the linters, and verifies that code generation (`make generate`) has been run and the results have been committed.
+
+See `make help` for more information on other useful `make` targets.
 
 ### Local Development/Testing
 
-It's very helpful to be able to test out changes to Contour locally without building images and pushing into clusters.
+As an alternative to using `make install-contour-working` from above, you may prefer to be able to test out changes to Contour locally without building images and pushing into clusters.
 
 To accomplish this, Envoy can be run inside a Kubernetes cluster, typically a `kind` cluster.
 Then Contour is run on your local machine and Envoy will be configured to look for Contour running on your machine vs running in the cluster.
@@ -108,9 +190,9 @@ Change `initContainers:` to look like this updating the IP and removing the thre
 
 5. Change your Contour code.
 
-6. Build & start Contour allowing Envoy to connect and get its configuration. 
+6. Build & start Contour allowing Envoy to connect and get its configuration.
 ```shell
-make install && contour serve --kubeconfig=$HOME/.kube/config --xds-address=0.0.0.0 --insecure 
+make install && contour serve --kubeconfig=$HOME/.kube/config --xds-address=0.0.0.0 --insecure
 ```
 
 8. Test using the local kind cluster by deploying resources into that cluster. Many of our examples use `local.projectcontour.io` which is configured to point to `127.0.0.1` which allows requests to route to the local kind cluster for easy testing.
@@ -147,7 +229,7 @@ Further columns represent decreasing priority, with "Prioritized Backlog" contai
 **Notes for maintainers and contributors**
 - If you are looking for work to pick up:
   - Look to the leftmost columns of the project board
-  - *New contributors* can use [this shortcut link](https://github.com/projectcontour/contour/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22+label%3A%22help+wanted%22) to find good beginner Contour issues to work on and [this shortcut link](https://github.com/projectcontour/contour-operator/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22+label%3A%22help+wanted%22) to find Operator issues
+  - *New contributors* can use [this shortcut link](https://github.com/projectcontour/contour/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22+label%3A%22help+wanted%22) to find good beginner Contour issues to work on
 - When a new Issue or PR is added, add it to the project board and make a best judgement on relative priority so we have a starting place in triage
 - When moving items between columns, please add a comment to the Issue or PR detailing why so we have context in triage sessions
 
@@ -178,9 +260,10 @@ the need to cherrypick a commit or rollback arise, it should be clear what a spe
 with a colon as delimiter. For example 'docs:', 'internal/(packagename):', 'design:' or something similar.
 - PRs *must* be labelled with a `release-note/category` label, where category is one of
 `major`, `minor`, `small`, `docs`, or `infra`, unless the change is really small, in which case
-it may have a `release-note/not-required` category.
+it may have a `release-note/not-required` category. PRs may also include a `release-note/deprecation`
+label alone or in addition to the primary label.
 - PRs *must* include a file named `changelogs/unreleased/PR#-githubID-category.md`, which is a Markdown
-file with a description of the change. Please see `changelogs/unreleased/<category>-sample.md` for 
+file with a description of the change. Please see `changelogs/unreleased/<category>-sample.md` for
 sample changelogs.
 - If main has moved on, you'll need to rebase before we can merge,
 so merging upstream main or rebasing from upstream before opening your
@@ -228,22 +311,31 @@ At a maintainer's discretion, pull requests with multiple commits can be merged 
 Merging pull requests with multiple commits can make sense in cases where a change involves code generation or mechanical changes that can be cleanly separated from semantic changes.
 The maintainer should review commit messages for each commit and make sure that each commit builds and passes tests.
 
+### Code formatting
+
+Contour utilizes [`gofumpt`](https://github.com/mvdan/gofumpt) for strict Golang formatting of the contour codebase.
+The `lint` CI job checks this to ensure all commits are formatted as expected.
+
+The `make format` target can be used to run `gofumpt` locally before making a PR.
+
 ### Import Aliases
 
 Naming is one of the most difficult things in software engineering.
-Contour uses the following pattern to name imports when referencing packages from other packages.
+Contour uses the following general pattern to name imports when referencing internal packages and packages from other projects.
 
 > thing_version: The name+package path of the thing and then the version separated by underscores
 
 Examples:
 
 ```
-contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-contour_api_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
 envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 xdscache_v3 "github.com/projectcontour/contour/internal/xdscache/v3"
-```   
- 
+```
+
+Exact patterns for import paths can be found in the `importas` linter settings in `.golangci.yml`
+
 ### Pre commit CI
 
 Before a change is submitted it should pass all the pre commit CI jobs.
@@ -281,11 +373,11 @@ This section provides some useful information and guidelines for working with Co
 #### Config/Data Categories
 * **Kubernetes Config**: `HTTPProxy`, `Ingress` or [Gateway API][8] config that Contour watches and converts to Envoy config.
 * **DAG**: The internal Contour representation of L7 proxy concepts. Kubernetes config is first converted to DAG objects before being converted to Envoy config.
-* **Envoy Config**: Configuration that can be provided to Envoy via xDS. This is Contour's final output, generated directly from the DAG. 
+* **Envoy Config**: Configuration that can be provided to Envoy via xDS. This is Contour's final output, generated directly from the DAG.
 
 #### Test Categories
 * **Unit Test**: A Go test for a particular function/package. In some cases, these test more than one package at a time.
-* **Feature Test**: A Go test in `internal/featuretests` that tests the translation of Kubernetes config to Envoy config, using a Contour event handler and xDS server. 
+* **Feature Test**: A Go test in `internal/featuretests` that tests the translation of Kubernetes config to Envoy config, using a Contour event handler and xDS server.
 * **End-To-End (E2E) Test**: A Go test in `test/e2e` that performs a full end-to-end test of Contour running in a cluster. Typically verifies the behavior of HTTP requests given a Kubernetes `HTTPProxy`, `Ingress` or Gateway API config.
 
 ### Summary of Major Test Suites
@@ -301,6 +393,9 @@ In general, changes to the core processing pipeline should be accompanied by new
 | `internal/xdscache/v3/*_test.go` (specifically the `Test[Cluster\|Listener\|Route\|Secret]Visit` functions) | Tests conversion of Kubernetes config to Envoy config. |
 | `internal/featuretests/v3/*_test.go` | Tests conversion of Kubernetes config to Envoy config, using a ~full Contour event handler and xDS server. |
 | `test/e2e/[httpproxy\|gateway\|ingress]` | E2E tests with Contour running in a cluster. Verifies behavior of HTTP requests for configured proxies. |
+
+> **Note:**
+To compile code under folder `e2e` with VSCode, please add `"go.buildTags": "e2e,conformance"` to VSCode config file `settings.json`. Since tests under it have e2e and conformance build tags.
 
 
 ## DCO Sign off
@@ -368,7 +463,7 @@ By making a contribution to this project, I certify that:
 
 [1]: https://golang.org/dl/
 [2]: https://github.com/golang/go/wiki/Modules
-[3]: https://docs.github.com/en/github/getting-started-with-github/fork-a-repo#fork-an-example-repository 
+[3]: https://docs.github.com/en/github/getting-started-with-github/fork-a-repo#fork-an-example-repository
 [4]: https://golang.org/pkg/testing/
 [5]: https://developercertificate.org/
 [6]: https://github.com/projectcontour/contour/issues/new/choose

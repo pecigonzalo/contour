@@ -17,87 +17,116 @@
 package contour
 
 import (
+	"context"
+	"reflect"
+	"sync/atomic"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	contour_api_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/cache/synctrack"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/projectcontour/contour/internal/dag"
 	"github.com/projectcontour/contour/internal/k8s"
-	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+type EventHandlerConfig struct {
+	Logger                        logrus.FieldLogger
+	Builder                       *dag.Builder
+	Observer                      dag.Observer
+	HoldoffDelay, HoldoffMaxDelay time.Duration
+	StatusUpdater                 k8s.StatusUpdater
+}
 
 // EventHandler implements cache.ResourceEventHandler, filters k8s events towards
 // a dag.Builder and calls through to the Observer to notify it that a new DAG
 // is available.
 type EventHandler struct {
-	Builder  dag.Builder
-	Observer dag.Observer
+	builder  *dag.Builder
+	observer dag.Observer
 
-	HoldoffDelay, HoldoffMaxDelay time.Duration
+	holdoffDelay, holdoffMaxDelay time.Duration
 
-	StatusUpdater k8s.StatusUpdater
+	statusUpdater k8s.StatusUpdater
 
 	logrus.FieldLogger
 
-	// IsLeader will become ready to read when this EventHandler becomes
-	// the leader. If IsLeader is not readable, or nil, status events will
-	// be suppressed.
-	IsLeader chan struct{}
+	update chan any
 
-	update chan interface{}
-
-	// Sequence is a channel that receives a incrementing sequence number
-	// for each update processed. The updates may be processed immediately, or
-	// delayed by a holdoff timer. In each case a non blocking send to Sequence
-	// will be made once the resource update is received (note
-	// that the DAG is not guaranteed to be called each time).
-	Sequence chan int
+	sequence chan int
 
 	// seq is the sequence counter of the number of times
 	// an event has been received.
 	seq int
+
+	// syncTracker is used to update/query the status of the cache sync.
+	// Uses an internal counter: incremented at item start, decremented at end.
+	// HasSynced returns true if its UpstreamHasSynced returns true and the counter is non-positive.
+	syncTracker *synctrack.SingleFileTracker
+
+	initialDagBuilt atomic.Bool
+}
+
+func NewEventHandler(config EventHandlerConfig, upstreamHasSynced cache.InformerSynced) *EventHandler {
+	return &EventHandler{
+		FieldLogger:     config.Logger,
+		builder:         config.Builder,
+		observer:        config.Observer,
+		holdoffDelay:    config.HoldoffDelay,
+		holdoffMaxDelay: config.HoldoffMaxDelay,
+		statusUpdater:   config.StatusUpdater,
+		update:          make(chan any),
+		sequence:        make(chan int, 1),
+		syncTracker:     &synctrack.SingleFileTracker{UpstreamHasSynced: upstreamHasSynced},
+	}
 }
 
 type opAdd struct {
-	obj interface{}
+	obj             any
+	isInInitialList bool
 }
 
 type opUpdate struct {
-	oldObj, newObj interface{}
+	oldObj, newObj any
 }
 
 type opDelete struct {
-	obj interface{}
+	obj any
 }
 
-func (e *EventHandler) OnAdd(obj interface{}) {
-	e.update <- opAdd{obj: obj}
+func (e *EventHandler) OnAdd(obj any, isInInitialList bool) {
+	if isInInitialList {
+		e.syncTracker.Start()
+	}
+	e.update <- opAdd{obj: obj, isInInitialList: isInInitialList}
 }
 
-func (e *EventHandler) OnUpdate(oldObj, newObj interface{}) {
+func (e *EventHandler) OnUpdate(oldObj, newObj any) {
 	e.update <- opUpdate{oldObj: oldObj, newObj: newObj}
 }
 
-func (e *EventHandler) OnDelete(obj interface{}) {
+func (e *EventHandler) OnDelete(obj any) {
 	e.update <- opDelete{obj: obj}
 }
 
-// UpdateNow enqueues a DAG update subject to the holdoff timer.
-func (e *EventHandler) UpdateNow() {
+// NeedLeaderElection is included to implement manager.LeaderElectionRunnable
+func (e *EventHandler) NeedLeaderElection() bool {
+	return false
+}
+
+func (e *EventHandler) HasBuiltInitialDag() bool {
+	return e.initialDagBuilt.Load()
+}
+
+// Implements leadership.NeedLeaderElectionNotification
+func (e *EventHandler) OnElectedLeader() {
+	// Trigger an update when we are elected leader to ensure resource
+	// statuses are not stale.
 	e.update <- true
 }
 
-// Start initializes the EventHandler and returns a function suitable
-// for registration with a workgroup.Group.
-func (e *EventHandler) Start() func(<-chan struct{}) error {
-	e.update = make(chan interface{})
-	return e.run
-}
-
-// run is the main event handling loop.
-func (e *EventHandler) run(stop <-chan struct{}) error {
+func (e *EventHandler) Start(ctx context.Context) error {
 	e.Info("started event handler")
 	defer e.Info("stopped event handler")
 
@@ -117,6 +146,15 @@ func (e *EventHandler) run(stop <-chan struct{}) error {
 		// run to allow the holdoff timer to batch the updates from
 		// the API informers.
 		lastDAGRebuild = time.Now()
+
+		// initialSyncPollPeriod defines the duration to wait between polling attempts during the initial informer synchronization.
+		initialSyncPollPeriod = 100 * time.Millisecond
+
+		// initialSyncPollTicker is the ticker that will trigger the periodic polling.
+		initialSyncPollTicker = time.NewTicker(initialSyncPollPeriod)
+
+		// initialSyncPoll is the channel that will receive a signal when to poll the initial informer synchronization status.
+		initialSyncPoll = initialSyncPollTicker.C
 	)
 
 	reset := func() (v int) {
@@ -143,8 +181,8 @@ func (e *EventHandler) run(stop <-chan struct{}) error {
 					timer.Stop()
 				}
 
-				delay := e.HoldoffDelay
-				if time.Since(lastDAGRebuild) > e.HoldoffMaxDelay {
+				delay := e.holdoffDelay
+				if time.Since(lastDAGRebuild) > e.holdoffMaxDelay {
 					// the maximum holdoff delay has been exceeded so schedule the update
 					// immediately by delaying for 0ns.
 					delay = 0
@@ -156,12 +194,43 @@ func (e *EventHandler) run(stop <-chan struct{}) error {
 				// not to process it.
 				e.incSequence()
 			}
+
+			// We're done processing this event
+			if updateOpAdd, ok := op.(opAdd); ok {
+				if updateOpAdd.isInInitialList {
+					e.syncTracker.Finished()
+				}
+			}
 		case <-pending:
+			// Ensure informer caches are synced.
+			// Schedule a retry for dag rebuild if cache is not synced yet.
+			// Note that we can't block and wait for the cache sync as it depends on progress of this loop.
+			if !e.syncTracker.HasSynced() {
+				e.Info("skipping dag rebuild as cache is not synced")
+				timer.Reset(e.holdoffDelay)
+				break
+			}
+
 			e.WithField("last_update", time.Since(lastDAGRebuild)).WithField("outstanding", reset()).Info("performing delayed update")
-			e.rebuildDAG()
+
+			// Build a new DAG and sends it to the Observer.
+			latestDAG := e.builder.Build()
+			e.observer.OnChange(latestDAG)
+
+			// Update the status on objects.
+			for _, upd := range latestDAG.StatusCache.GetStatusUpdates() {
+				e.statusUpdater.Send(upd)
+			}
+
 			e.incSequence()
 			lastDAGRebuild = time.Now()
-		case <-stop:
+		case <-initialSyncPoll:
+			if e.syncTracker.HasSynced() {
+				// Informer caches are synced, stop the polling and allow xDS server to start.
+				initialSyncPollTicker.Stop()
+				e.initialDagBuilt.Store(true)
+			}
+		case <-ctx.Done():
 			// shutdown
 			return nil
 		}
@@ -171,24 +240,38 @@ func (e *EventHandler) run(stop <-chan struct{}) error {
 // onUpdate processes the event received. onUpdate returns
 // true if the event changed the cache in a way that requires
 // notifying the Observer.
-func (e *EventHandler) onUpdate(op interface{}) bool {
+func (e *EventHandler) onUpdate(op any) bool {
 	switch op := op.(type) {
 	case opAdd:
-		return e.Builder.Source.Insert(op.obj)
+		return e.builder.Source.Insert(op.obj)
 	case opUpdate:
-		if cmp.Equal(op.oldObj, op.newObj,
-			cmpopts.IgnoreFields(contour_api_v1.HTTPProxy{}, "Status"),
-			cmpopts.IgnoreFields(metav1.ObjectMeta{}, "ResourceVersion"),
-			cmpopts.IgnoreFields(metav1.ObjectMeta{}, "ManagedFields"),
-		) {
-			e.WithField("op", "update").Debugf("%T skipping update, only status has changed", op.newObj)
-			return false
+		oldO, oldOk := op.oldObj.(client.Object)
+		newO, newOk := op.newObj.(client.Object)
+		if oldOk && newOk {
+			equal, err := k8s.IsObjectEqual(oldO, newO)
+			// Error is returned if there was no support for comparing equality of the specific object type.
+			// We can still process the object but it will be always considered as changed.
+			if err != nil {
+				e.WithError(err).WithField("op", "update").
+					WithField("name", newO.GetName()).WithField("namespace", newO.GetNamespace()).
+					WithField("gvk", reflect.TypeOf(newO)).Errorf("error comparing objects")
+			}
+			if equal {
+				// log the object name and namespace to help with debugging.
+				e.WithField("op", "update").
+					WithField("name", oldO.GetName()).WithField("namespace", oldO.GetNamespace()).
+					WithField("gvk", reflect.TypeOf(newO)).Debugf("skipping update, no changes to relevant fields")
+				return false
+			}
+			remove := e.builder.Source.Remove(op.oldObj)
+			insert := e.builder.Source.Insert(op.newObj)
+			return remove || insert
 		}
-		remove := e.Builder.Source.Remove(op.oldObj)
-		insert := e.Builder.Source.Insert(op.newObj)
-		return remove || insert
+		// This should never happen.
+		e.WithField("op", "update").Errorf("%T skipping update, object is not a client.Object", op.newObj)
+		return false
 	case opDelete:
-		return e.Builder.Source.Remove(op.obj)
+		return e.builder.Source.Remove(op.obj)
 	case bool:
 		return op
 	default:
@@ -196,25 +279,22 @@ func (e *EventHandler) onUpdate(op interface{}) bool {
 	}
 }
 
+// Sequence returns a channel that receives a incrementing sequence number
+// for each update processed. The updates may be processed immediately, or
+// delayed by a holdoff timer. In each case a non blocking send to the
+// sequence channel will be made once the resource update is received (note
+// that the DAG is not guaranteed to be called each time).
+func (e *EventHandler) Sequence() <-chan int {
+	return e.sequence
+}
+
 // incSequence bumps the sequence counter and sends it to e.Sequence.
 func (e *EventHandler) incSequence() {
 	e.seq++
 	select {
-	case e.Sequence <- e.seq:
+	case e.sequence <- e.seq:
 		// This is a non blocking send so if this field is nil, or the
 		// receiver is not ready this send does not block incSequence's caller.
 	default:
 	}
-}
-
-// rebuildDAG builds a new DAG and sends it to the Observer,
-// the updates the status on objects, and updates the metrics.
-func (e *EventHandler) rebuildDAG() {
-	latestDAG := e.Builder.Build()
-	e.Observer.OnChange(latestDAG)
-
-	for _, upd := range latestDAG.StatusCache.GetStatusUpdates() {
-		e.StatusUpdater.Send(upd)
-	}
-
 }

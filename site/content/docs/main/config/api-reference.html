@@ -29,18 +29,17 @@ Resource Types:
 <p>
 <p>HTTPProxy is an Ingress CRD specification.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td>
-<code>apiVersion</code>
-<br>
+<code>apiVersion</code></br>
 string</td>
 <td>
 <code>
@@ -50,8 +49,7 @@ projectcontour.io/v1
 </tr>
 <tr>
 <td>
-<code>kind</code>
-<br>
+<code>kind</code></br>
 string
 </td>
 <td><code>HTTPProxy</code></td>
@@ -61,7 +59,7 @@ string
 <code>metadata</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -189,18 +187,17 @@ HTTPProxyStatus
 <p>TLSCertificateDelegation is an TLS Certificate Delegation CRD specification.
 See design/tls-certificate-delegation.md for details.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td>
-<code>apiVersion</code>
-<br>
+<code>apiVersion</code></br>
 string</td>
 <td>
 <code>
@@ -210,8 +207,7 @@ projectcontour.io/v1
 </tr>
 <tr>
 <td>
-<code>kind</code>
-<br>
+<code>kind</code></br>
 string
 </td>
 <td><code>TLSCertificateDelegation</code></td>
@@ -221,7 +217,7 @@ string
 <code>metadata</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -287,14 +283,14 @@ TLSCertificateDelegationStatus
 <p>
 <p>AuthorizationPolicy modifies how client requests are authenticated.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>disabled</code>
@@ -332,21 +328,22 @@ outer scope.</p>
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#projectcontour.io/v1.VirtualHost">VirtualHost</a>)
+<a href="#projectcontour.io/v1.VirtualHost">VirtualHost</a>, 
+<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
 </p>
 <p>
 <p>AuthorizationServer configures an external server to authenticate
 client requests. The external server must implement the v3 Envoy
 external authorization GRPC protocol (<a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto">https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto</a>).</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>extensionRef</code>
@@ -358,6 +355,7 @@ ExtensionServiceReference
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>ExtensionServiceRef specifies the extension resource that will authorize client requests.</p>
 </td>
 </tr>
@@ -409,10 +407,83 @@ set in most cases. It is intended for use only while migrating applications
 from internal authorization to Contour external authorization.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>withRequestBody</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.AuthorizationServerBufferSettings">
+AuthorizationServerBufferSettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>WithRequestBody specifies configuration for sending the client request&rsquo;s body to authorization server.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.AuthorizationServerBufferSettings">AuthorizationServerBufferSettings
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.AuthorizationServer">AuthorizationServer</a>)
+</p>
+<p>
+<p>AuthorizationServerBufferSettings enables ExtAuthz filter to buffer client request data and send it as part of authorization request</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRequestBytes</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxRequestBytes sets the maximum size of message body ExtAuthz filter will hold in-memory.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>allowPartialMessage</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>If AllowPartialMessage is true, then Envoy will buffer the body until MaxRequestBytes are reached.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>packAsBytes</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>If PackAsBytes is true, the body sent to Authorization Server is in raw bytes.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.CORSHeaderValue">CORSHeaderValue
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1.CORSPolicy">CORSPolicy</a>)
@@ -429,14 +500,14 @@ from internal authorization to Contour external authorization.</p>
 <p>
 <p>CORSPolicy allows setting the CORS policy</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>allowCredentials</code>
@@ -459,8 +530,12 @@ bool
 </em>
 </td>
 <td>
-<p>AllowOrigin specifies the origins that will be allowed to do CORS requests. &ldquo;*&rdquo; means
-allow any origin.</p>
+<p>AllowOrigin specifies the origins that will be allowed to do CORS requests.
+Allowed values include &ldquo;*&rdquo; which signifies any origin is allowed, an exact
+origin of the form &ldquo;scheme://host[:port]&rdquo; (where port is optional), or a valid
+regex pattern.
+Note that regex patterns are validated and a simple &ldquo;glob&rdquo; pattern (e.g. *.foo.com)
+will be rejected or produce unexpected matches when applied as a regex.</p>
 </td>
 </tr>
 <tr>
@@ -524,6 +599,19 @@ Only positive values are allowed while 0 disables the cache requiring a prefligh
 check for all cross-origin requests.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>allowPrivateNetwork</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<p>AllowPrivateNetwork specifies whether to allow private network requests.
+See <a href="https://developer.chrome.com/blog/private-network-access-preflight">https://developer.chrome.com/blog/private-network-access-preflight</a>.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.CertificateDelegation">CertificateDelegation
@@ -536,14 +624,14 @@ check for all cross-origin requests.</p>
 <p>CertificateDelegation maps the authority to reference a secret
 in the current namespace to a set of namespaces.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>secretName</code>
@@ -566,10 +654,247 @@ string
 </td>
 <td>
 <p>required, the namespaces the authority to reference the
-the secret will be delegated to.
+secret will be delegated to.
 If TargetNamespaces is nil or empty, the CertificateDelegation&rsquo;
 is ignored. If the TargetNamespace list contains the character, &ldquo;*&rdquo;
 the secret will be delegated to all namespaces.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.ClientCertificateDetails">ClientCertificateDetails
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.DownstreamValidation">DownstreamValidation</a>)
+</p>
+<p>
+<p>ClientCertificateDetails defines which parts of the client certificate will be forwarded.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>subject</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Subject of the client cert.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>cert</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Client cert in URL encoded PEM format.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>chain</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Client cert chain (including the leaf cert) in URL encoded PEM format.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>dns</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DNS type Subject Alternative Names of the client cert.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>uri</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>URI type Subject Alternative Name of the client cert.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.CookieDomainRewrite">CookieDomainRewrite
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.CookieRewritePolicy">CookieRewritePolicy</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>value</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Value is the value to rewrite the Domain attribute to.
+For now this is required.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.CookiePathRewrite">CookiePathRewrite
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.CookieRewritePolicy">CookieRewritePolicy</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>value</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Value is the value to rewrite the Path attribute to.
+For now this is required.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.CookieRewritePolicy">CookieRewritePolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>, 
+<a href="#projectcontour.io/v1.Service">Service</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>name</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Name is the name of the cookie for which attributes will be rewritten.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>pathRewrite</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.CookiePathRewrite">
+CookiePathRewrite
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PathRewrite enables rewriting the Set-Cookie Path element.
+If not set, Path will not be rewritten.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>domainRewrite</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.CookieDomainRewrite">
+CookieDomainRewrite
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DomainRewrite enables rewriting the Set-Cookie Domain element.
+If not set, Domain will not be rewritten.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>secure</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Secure enables rewriting the Set-Cookie Secure element.
+If not set, Secure attribute will not be rewritten.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>sameSite</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SameSite enables rewriting the Set-Cookie SameSite element.
+If not set, SameSite attribute will not be rewritten.</p>
 </td>
 </tr>
 </tbody>
@@ -581,7 +906,6 @@ the secret will be delegated to all namespaces.</p>
 <a href="#projectcontour.io/v1.HTTPProxyStatus">HTTPProxyStatus</a>, 
 <a href="#projectcontour.io/v1.TLSCertificateDelegationStatus">TLSCertificateDelegationStatus</a>, 
 <a href="#projectcontour.io/v1alpha1.ContourConfigurationStatus">ContourConfigurationStatus</a>, 
-<a href="#projectcontour.io/v1alpha1.ContourDeploymentStatus">ContourDeploymentStatus</a>, 
 <a href="#projectcontour.io/v1alpha1.ExtensionServiceStatus">ExtensionServiceStatus</a>)
 </p>
 <p>
@@ -607,20 +931,20 @@ In either case, there may be entries in the <code>warnings</code> slice.</p>
 (if there is one and only one entry in total across both the <code>errors</code> and <code>warnings</code> slices), or
 <code>MultipleReasons</code> if there is more than one entry.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>Condition</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#condition-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#condition-v1-meta">
 Kubernetes meta/v1.Condition
 </a>
 </em>
@@ -676,14 +1000,14 @@ An empty slice here indicates no warnings.</p>
 <p>
 <p>DownstreamValidation defines how to verify the client certificate.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>caSecret</code>
@@ -695,9 +1019,12 @@ string
 <td>
 <em>(Optional)</em>
 <p>Name of a Kubernetes secret that contains a CA certificate bundle.
+The secret must contain key named ca.crt.
 The client certificate must validate against the certificates in the bundle.
 If specified and SkipClientCertValidation is true, client certificates will
-be required on requests.</p>
+be required on requests.
+The name can be optionally prefixed with namespace &ldquo;namespace/name&rdquo;.
+When cross-namespace reference is used, TLSCertificateDelegation resource must exist in the namespace to grant access to the secret.</p>
 </td>
 </tr>
 <tr>
@@ -720,6 +1047,72 @@ requests, but not verified. If external authorization is in use, they are
 presented to the external authorization server.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>forwardClientCertificate</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.ClientCertificateDetails">
+ClientCertificateDetails
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ForwardClientCertificate adds the selected data from the passed client TLS certificate
+to the x-forwarded-client-cert header.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>crlSecret</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Name of a Kubernetes opaque secret that contains a concatenated list of PEM encoded CRLs.
+The secret must contain key named crl.pem.
+This field will be used to verify that a client certificate has not been revoked.
+CRLs must be available from all CAs, unless crlOnlyVerifyLeafCert is true.
+Large CRL lists are not supported since individual secrets are limited to 1MiB in size.
+The name can be optionally prefixed with namespace &ldquo;namespace/name&rdquo;.
+When cross-namespace reference is used, TLSCertificateDelegation resource must exist in the namespace to grant access to the secret.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>crlOnlyVerifyLeafCert</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>If this option is set to true, only the certificate at the end of the
+certificate chain will be subject to validation by CRL.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>optionalClientCertificate</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OptionalClientCertificate when set to true will request a client certificate
+but allow the connection to continue if the client does not provide one.
+If a client certificate is sent, it will be verified according to the
+other properties, which includes disabling validation if
+SkipClientCertValidation is set. Defaults to false.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.ExtensionServiceReference">ExtensionServiceReference
@@ -731,14 +1124,14 @@ presented to the external authorization server.</p>
 <p>
 <p>ExtensionServiceReference names an ExtensionService resource.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>apiVersion</code>
@@ -783,6 +1176,14 @@ string
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.Feature">Feature
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourSettings">ContourSettings</a>)
+</p>
+<p>
+</p>
 <h3 id="projectcontour.io/v1.GenericKeyDescriptor">GenericKeyDescriptor
 </h3>
 <p>
@@ -793,14 +1194,14 @@ string
 <p>GenericKeyDescriptor defines a descriptor entry with a static key and
 value.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>key</code>
@@ -833,19 +1234,34 @@ string
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#projectcontour.io/v1.RateLimitPolicy">RateLimitPolicy</a>)
+<a href="#projectcontour.io/v1.RateLimitPolicy">RateLimitPolicy</a>, 
+<a href="#projectcontour.io/v1alpha1.RateLimitServiceConfig">RateLimitServiceConfig</a>)
 </p>
 <p>
 <p>GlobalRateLimitPolicy defines global rate limiting parameters.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>disabled</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Disabled configures the HTTPProxy to not use
+the default global rate limit policy defined by the Contour configuration.</p>
+</td>
+</tr>
 <tr>
 <td style="white-space:nowrap">
 <code>descriptors</code>
@@ -857,9 +1273,56 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Descriptors defines the list of descriptors that will
 be generated and sent to the rate limit service. Each
 descriptor contains 1+ key-value pair entries.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.HTTPDirectResponsePolicy">HTTPDirectResponsePolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>statusCode</code>
+<br>
+<em>
+int
+</em>
+</td>
+<td>
+<p>StatusCode is the HTTP response status to be returned.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>body</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Body is the content of the response body.
+If this setting is omitted, no body is included in the generated response.</p>
+<p>Note: Body is not recommended to set too long
+otherwise it can have significant resource usage impacts.</p>
 </td>
 </tr>
 </tbody>
@@ -873,14 +1336,14 @@ descriptor contains 1+ key-value pair entries.</p>
 <p>
 <p>HTTPHealthCheckPolicy defines health checks on the upstream service.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>path</code>
@@ -959,6 +1422,103 @@ int64
 <p>The number of healthy health checks required before a host is marked healthy</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>expectedStatuses</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.HTTPStatusRange">
+[]HTTPStatusRange
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The ranges of HTTP response statuses considered healthy. Follow half-open
+semantics, i.e. for each range the start is inclusive and the end is exclusive.
+Must be within the range [100,600). If not specified, only a 200 response status
+is considered healthy.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.HTTPInternalRedirectPolicy">HTTPInternalRedirectPolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>maxInternalRedirects</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxInternalRedirects An internal redirect is not handled, unless the number of previous internal
+redirects that a downstream request has encountered is lower than this value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>redirectResponseCodes</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.RedirectResponseCode">
+[]RedirectResponseCode
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RedirectResponseCodes If unspecified, only 302 will be treated as internal redirect.
+Only 301, 302, 303, 307 and 308 are valid values.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>allowCrossSchemeRedirect</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AllowCrossSchemeRedirect Allow internal redirect to follow a target URI with a different scheme
+than the value of x-forwarded-proto.
+SafeOnly allows same scheme redirect and safe cross scheme redirect, which means if the downstream
+scheme is HTTPS, both HTTPS and HTTP redirect targets are allowed, but if the downstream scheme
+is HTTP, only HTTP redirect targets are allowed.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>denyRepeatedRouteRedirect</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>If DenyRepeatedRouteRedirect is true, rejects redirect targets that are pointing to a route that has
+been followed by a previous redirect from the current route.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.HTTPProxySpec">HTTPProxySpec
@@ -970,14 +1530,14 @@ int64
 <p>
 <p>HTTPProxySpec defines the spec of the CRD.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>virtualhost</code>
@@ -1067,14 +1627,14 @@ is given precedence over this field.</p>
 <p>
 <p>HTTPProxyStatus reports the current state of the HTTPProxy.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>currentStatus</code>
@@ -1104,7 +1664,7 @@ string
 <code>loadBalancer</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#loadbalancerstatus-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#loadbalancerstatus-v1-core">
 Kubernetes core/v1.LoadBalancerStatus
 </a>
 </em>
@@ -1139,6 +1699,159 @@ namespace your condition with a label, like <code>controller.domain.com/Conditio
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.HTTPRequestRedirectPolicy">HTTPRequestRedirectPolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>)
+</p>
+<p>
+<p>HTTPRequestRedirectPolicy defines configuration for redirecting a request.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>scheme</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Scheme is the scheme to be used in the value of the <code>Location</code>
+header in the response.
+When empty, the scheme of the request is used.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>hostname</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Hostname is the precise hostname to be used in the value of the <code>Location</code>
+header in the response.
+When empty, the hostname of the request is used.
+No wildcards are allowed.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>port</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Port is the port to be used in the value of the <code>Location</code>
+header in the response.
+When empty, port (if specified) of the request is used.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>statusCode</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.RedirectResponseCode">
+RedirectResponseCode
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>StatusCode is the HTTP status code to be used in response.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>path</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Path allows for redirection to a different path from the
+original on the request. The path must start with a
+leading slash.</p>
+<p>Note: Only one of Path or Prefix can be defined.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>prefix</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Prefix defines the value to swap the matched prefix or path with.
+The prefix must start with a leading slash.</p>
+<p>Note: Only one of Path or Prefix can be defined.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.HTTPStatusRange">HTTPStatusRange
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.HTTPHealthCheckPolicy">HTTPHealthCheckPolicy</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>start</code>
+<br>
+<em>
+int64
+</em>
+</td>
+<td>
+<p>The start (inclusive) of a range of HTTP status codes.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>end</code>
+<br>
+<em>
+int64
+</em>
+</td>
+<td>
+<p>The end (exclusive) of a range of HTTP status codes.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="projectcontour.io/v1.HeaderHashOptions">HeaderHashOptions
 </h3>
 <p>
@@ -1149,14 +1862,14 @@ namespace your condition with a label, like <code>controller.domain.com/Conditio
 <p>HeaderHashOptions contains options to configure a HTTP request header hash
 policy, used in request attribute hash based load balancing.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>headerName</code>
@@ -1182,17 +1895,20 @@ request, no hash will be produced.</p>
 </p>
 <p>
 <p>HeaderMatchCondition specifies how to conditionally match against HTTP
-headers. The Name field is required, but only one of the remaining
-fields should be be provided.</p>
+headers. The Name field is required, only one of Present, NotPresent,
+Contains, NotContains, Exact, NotExact and Regex can be set.
+For negative matching rules only (e.g. NotContains or NotExact) you can set
+TreatMissingAsEmpty.
+IgnoreCase has no effect for Regex.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -1267,6 +1983,20 @@ in the header value.</p>
 </tr>
 <tr>
 <td style="white-space:nowrap">
+<code>ignoreCase</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IgnoreCase specifies that string matching should be case insensitive.
+Note that this has no effect on the Regex parameter.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
 <code>exact</code>
 <br>
 <em>
@@ -1292,6 +2022,36 @@ string
 equal to. The condition is true if the header has any other value.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>regex</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Regex specifies a regular expression pattern that must match the header
+value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>treatMissingAsEmpty</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>TreatMissingAsEmpty specifies if the header match rule specified header
+does not exist, this header value will be treated as empty. Defaults to false.
+Unlike the underlying Envoy implementation this is <strong>only</strong> supported for
+negative matches (e.g. NotContains, NotExact).</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.HeaderValue">HeaderValue
@@ -1304,14 +2064,14 @@ equal to. The condition is true if the header has any other value.</p>
 <p>
 <p>HeaderValue represents a header name/value pair</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -1347,18 +2107,18 @@ string
 </p>
 <p>
 <p>HeadersPolicy defines how headers are managed during forwarding.
-The <code>Host</code> header is treated specially and if set in a HTTP response
+The <code>Host</code> header is treated specially and if set in a HTTP request
 will be used as the SNI server name when forwarding over TLS. It is an
 error to attempt to set the <code>Host</code> header in a HTTP response.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>set</code>
@@ -1390,6 +2150,79 @@ If the header does not exist it will be added, otherwise it will be overwritten 
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.IPFilterPolicy">IPFilterPolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>, 
+<a href="#projectcontour.io/v1.VirtualHost">VirtualHost</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>source</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.IPFilterSource">
+IPFilterSource
+</a>
+</em>
+</td>
+<td>
+<p>Source indicates how to determine the ip address to filter on, and can be
+one of two values:
+- <code>Remote</code> filters on the ip address of the client, accounting for PROXY and
+X-Forwarded-For as needed.
+- <code>Peer</code> filters on the ip of the network request, ignoring PROXY and
+X-Forwarded-For.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>cidr</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>CIDR is a CIDR block of ipv4 or ipv6 addresses to filter on. This can also be
+a bare IP address (without a mask) to filter on exactly one address.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.IPFilterSource">IPFilterSource
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.IPFilterPolicy">IPFilterPolicy</a>)
+</p>
+<p>
+<p>IPFilterSource indicates which IP should be considered for filtering</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;Peer&#34;</p></td>
+<td></td>
+</tr><tr><td><p>&#34;Remote&#34;</p></td>
+<td></td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1.Include">Include
 </h3>
 <p>
@@ -1399,14 +2232,14 @@ If the header does not exist it will be added, otherwise it will be overwritten 
 <p>
 <p>Include describes a set of policies that can be applied to an HTTPProxy in a namespace.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -1450,7 +2283,165 @@ structs.
 When applied, they are merged using AND, with one exception:
 There can be only one Prefix MatchCondition per Conditions slice.
 More than one Prefix, or contradictory Conditions, will make the
-include invalid.</p>
+include invalid. Exact and Regex match conditions are not allowed
+on includes.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.JWTProvider">JWTProvider
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.VirtualHost">VirtualHost</a>)
+</p>
+<p>
+<p>JWTProvider defines how to verify JWTs on requests.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>name</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Unique name for the provider.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>default</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Whether the provider should apply to all
+routes in the HTTPProxy/its includes by
+default. At most one provider can be marked
+as the default. If no provider is marked
+as the default, individual routes must explicitly
+identify the provider they require.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>issuer</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Issuer that JWTs are required to have in the &ldquo;iss&rdquo; field.
+If not provided, JWT issuers are not checked.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>audiences</code>
+<br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Audiences that JWTs are allowed to have in the &ldquo;aud&rdquo; field.
+If not provided, JWT audiences are not checked.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>remoteJWKS</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.RemoteJWKS">
+RemoteJWKS
+</a>
+</em>
+</td>
+<td>
+<p>Remote JWKS to use for verifying JWT signatures.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>forwardJWT</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Whether the JWT should be forwarded to the backend
+service after successful verification. By default,
+the JWT is not forwarded.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.JWTVerificationPolicy">JWTVerificationPolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Route">Route</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>require</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Require names a specific JWT provider (defined in the virtual host)
+to require for the route. If specified, this field overrides the
+default provider if one exists. If this field is not specified,
+the default provider will be required if one exists. At most one of
+this field or the &ldquo;disabled&rdquo; field can be specified.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>disabled</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Disabled defines whether to disable all JWT verification for this
+route. This can be used to opt specific routes out of the default
+JWT provider for the HTTPProxy. At most one of this field or the
+&ldquo;require&rdquo; field can be specified.</p>
 </td>
 </tr>
 </tbody>
@@ -1466,14 +2457,14 @@ include invalid.</p>
 <p>
 <p>LoadBalancerPolicy defines the load balancing policy.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>strategy</code>
@@ -1506,7 +2497,7 @@ is used.</p>
 <code>RequestHash</code> load balancing strategy is chosen. If an element of the
 supplied list of hash policies is invalid, it will be ignored. If the
 list of hash policies is empty after validation, the load balancing
-strategy will fall back the the default <code>RoundRobin</code>.</p>
+strategy will fall back to the default <code>RoundRobin</code>.</p>
 </td>
 </tr>
 </tbody>
@@ -1520,14 +2511,14 @@ strategy will fall back the the default <code>RoundRobin</code>.</p>
 <p>
 <p>LocalRateLimitPolicy defines local rate limiting parameters.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>requests</code>
@@ -1612,16 +2603,16 @@ set when a request is rate-limited.</p>
 </p>
 <p>
 <p>MatchCondition are a general holder for matching rules for HTTPProxies.
-One of Prefix or Header must be provided.</p>
+One of Prefix, Exact, Regex, Header or QueryParameter must be provided.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>prefix</code>
@@ -1633,6 +2624,34 @@ string
 <td>
 <em>(Optional)</em>
 <p>Prefix defines a prefix match for a request.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>exact</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Exact defines a exact match for a request.
+This field is not allowed in include match conditions.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>regex</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Regex defines a regex match for a request.
+This field is not allowed in include match conditions.</p>
 </td>
 </tr>
 <tr>
@@ -1650,8 +2669,44 @@ HeaderMatchCondition
 <p>Header specifies the header condition to match.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>queryParameter</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.QueryParameterMatchCondition">
+QueryParameterMatchCondition
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>QueryParameter specifies the query parameter condition to match.</p>
+</td>
+</tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.Namespace">Namespace
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourSettings">ContourSettings</a>)
+</p>
+<p>
+<p>Namespace refers to a Kubernetes namespace. It must be a RFC 1123 label.</p>
+<p>This validation is based off of the corresponding Kubernetes validation:
+<a href="https://github.com/kubernetes/apimachinery/blob/02cfb53916346d085a6c6c7c66f882e3c6b0eca6/pkg/util/validation/validation.go#L187">https://github.com/kubernetes/apimachinery/blob/02cfb53916346d085a6c6c7c66f882e3c6b0eca6/pkg/util/validation/validation.go#L187</a></p>
+<p>This is used for Namespace name validation here:
+<a href="https://github.com/kubernetes/apimachinery/blob/02cfb53916346d085a6c6c7c66f882e3c6b0eca6/pkg/api/validation/generic.go#L63">https://github.com/kubernetes/apimachinery/blob/02cfb53916346d085a6c6c7c66f882e3c6b0eca6/pkg/api/validation/generic.go#L63</a></p>
+<p>Valid values include:</p>
+<ul>
+<li>&ldquo;example&rdquo;</li>
+</ul>
+<p>Invalid values include:</p>
+<ul>
+<li>&ldquo;example.com&rdquo; - &ldquo;.&rdquo; is an invalid character</li>
+</ul>
+</p>
 <h3 id="projectcontour.io/v1.PathRewritePolicy">PathRewritePolicy
 </h3>
 <p>
@@ -1665,14 +2720,14 @@ and has no subsequent effects on the proxy&rsquo;s routing decision.
 No HTTP headers or body content is rewritten.</p>
 <p>Exactly one field in this struct may be specified.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>replacePrefix</code>
@@ -1690,6 +2745,172 @@ No HTTP headers or body content is rewritten.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.QueryParameterHashOptions">QueryParameterHashOptions
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.RequestHashPolicy">RequestHashPolicy</a>)
+</p>
+<p>
+<p>QueryParameterHashOptions contains options to configure a query parameter based hash
+policy, used in request attribute hash based load balancing.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>parameterName</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ParameterName is the name of the HTTP request query parameter that will be used to
+calculate the hash key. If the query parameter specified is not present on a
+request, no hash will be produced.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.QueryParameterMatchCondition">QueryParameterMatchCondition
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.MatchCondition">MatchCondition</a>)
+</p>
+<p>
+<p>QueryParameterMatchCondition specifies how to conditionally match against HTTP
+query parameters. The Name field is required, only one of Exact, Prefix,
+Suffix, Regex, Contains and Present can be set. IgnoreCase has no effect
+for Regex.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>name</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Name is the name of the query parameter to match against. Name is required.
+Query parameter names are case insensitive.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>exact</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Exact specifies a string that the query parameter value must be equal to.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>prefix</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Prefix defines a prefix match for the query parameter value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>suffix</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Suffix defines a suffix match for a query parameter value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>regex</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Regex specifies a regular expression pattern that must match the query
+parameter value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>contains</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Contains specifies a substring that must be present in
+the query parameter value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ignoreCase</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IgnoreCase specifies that string matching should be case insensitive.
+Note that this has no effect on the Regex parameter.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>present</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Present specifies that condition is true when the named query parameter
+is present, regardless of its value. Note that setting Present
+to false does not make the condition true if the named query parameter
+is absent.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="projectcontour.io/v1.RateLimitDescriptor">RateLimitDescriptor
 </h3>
 <p>
@@ -1699,14 +2920,14 @@ No HTTP headers or body content is rewritten.</p>
 <p>
 <p>RateLimitDescriptor defines a list of key-value pair generators.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>entries</code>
@@ -1733,14 +2954,14 @@ No HTTP headers or body content is rewritten.</p>
 <p>RateLimitDescriptorEntry is a key-value pair generator. Exactly
 one field on this struct must be non-nil.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>genericKey</code>
@@ -1818,14 +3039,14 @@ and a value equal to the client&rsquo;s IP address (from x-forwarded-for).</p>
 <p>
 <p>RateLimitPolicy defines rate limiting parameters.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>local</code>
@@ -1862,6 +3083,16 @@ service (RLS) for a rate limit decision on each request.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1.RedirectResponseCode">RedirectResponseCode
+(<code>uint32</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.HTTPInternalRedirectPolicy">HTTPInternalRedirectPolicy</a>, 
+<a href="#projectcontour.io/v1.HTTPRequestRedirectPolicy">HTTPRequestRedirectPolicy</a>)
+</p>
+<p>
+<p>RedirectResponseCode is a uint32 type alias with validation to ensure that the value is valid.</p>
+</p>
 <h3 id="projectcontour.io/v1.RemoteAddressDescriptor">RemoteAddressDescriptor
 </h3>
 <p>
@@ -1873,6 +3104,104 @@ service (RLS) for a rate limit decision on each request.</p>
 &ldquo;remote_address&rdquo; and a value equal to the client&rsquo;s IP address
 (from x-forwarded-for).</p>
 </p>
+<h3 id="projectcontour.io/v1.RemoteJWKS">RemoteJWKS
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.JWTProvider">JWTProvider</a>)
+</p>
+<p>
+<p>RemoteJWKS defines how to fetch a JWKS from an HTTP endpoint.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>uri</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>The URI for the JWKS.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>validation</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.UpstreamValidation">
+UpstreamValidation
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>UpstreamValidation defines how to verify the JWKS&rsquo;s TLS certificate.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>timeout</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>How long to wait for a response from the URI.
+If not specified, a default of 1s applies.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>cacheDuration</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>How long to cache the JWKS locally. If not specified,
+Envoy&rsquo;s default of 5m applies.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>dnsLookupFamily</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The DNS IP address resolution policy for the JWKS URI.
+When configured as &ldquo;v4&rdquo;, the DNS resolver will only perform a lookup
+for addresses in the IPv4 family. If &ldquo;v6&rdquo; is configured, the DNS resolver
+will only perform a lookup for addresses in the IPv6 family.
+If &ldquo;all&rdquo; is configured, the DNS resolver
+will perform a lookup for addresses in both the IPv4 and IPv6 family.
+If &ldquo;auto&rdquo; is configured, the DNS resolver will first perform a lookup
+for addresses in the IPv6 family and fallback to a lookup for addresses
+in the IPv4 family. If not specified, the Contour-wide setting defined
+in the config file or ContourConfiguration applies (defaults to &ldquo;auto&rdquo;).</p>
+<p>See <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto.html#envoy-v3-api-enum-config-cluster-v3-cluster-dnslookupfamily">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto.html#envoy-v3-api-enum-config-cluster-v3-cluster-dnslookupfamily</a>
+for more information.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="projectcontour.io/v1.ReplacePrefix">ReplacePrefix
 </h3>
 <p>
@@ -1882,14 +3211,14 @@ service (RLS) for a rate limit decision on each request.</p>
 <p>
 <p>ReplacePrefix describes a path prefix replacement.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>prefix</code>
@@ -1936,14 +3265,14 @@ will be replaced with. This must not be empty.</p>
 <p>RequestHashPolicy contains configuration for an individual hash policy
 on a request attribute.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>terminal</code>
@@ -1970,8 +3299,41 @@ HeaderHashOptions
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>HeaderHashOptions should be set when request header hash based load
 balancing is desired. It must be the only hash option field set,
+otherwise this request hash policy object will be ignored.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>queryParameterHashOptions</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.QueryParameterHashOptions">
+QueryParameterHashOptions
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>QueryParameterHashOptions should be set when request query parameter hash based load
+balancing is desired. It must be the only hash option field set,
+otherwise this request hash policy object will be ignored.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>hashSourceIP</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>HashSourceIP should be set to true when request source IP hash based
+load balancing is desired. It must be the only hash option field set,
 otherwise this request hash policy object will be ignored.</p>
 </td>
 </tr>
@@ -1988,14 +3350,14 @@ otherwise this request hash policy object will be ignored.</p>
 if a given header is present on the request. The value of the descriptor
 entry is equal to the value of the header (if present).</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>headerName</code>
@@ -2033,14 +3395,14 @@ string
 if the request&rsquo;s headers match a set of 1+ match criteria. The descriptor key
 is &ldquo;header_match&rdquo;, and the descriptor value is statically defined.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>headers</code>
@@ -2086,7 +3448,7 @@ string
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.RetryOn">RetryOn
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1.RetryPolicy">RetryPolicy</a>)
@@ -2103,14 +3465,14 @@ string
 <p>
 <p>RetryPolicy defines the attributes associated with retrying policy.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>count</code>
@@ -2122,7 +3484,9 @@ int64
 <td>
 <em>(Optional)</em>
 <p>NumRetries is maximum allowed number of retries.
-If not supplied, the number of retries is one.</p>
+If set to -1, then retries are disabled.
+If set to 0 or not supplied, the value is set
+to the Envoy default of 1.</p>
 </td>
 </tr>
 <tr>
@@ -2157,11 +3521,14 @@ Ignored if NumRetries is not supplied.</p>
 <li><code>5xx</code></li>
 <li><code>gateway-error</code></li>
 <li><code>reset</code></li>
+<li><code>reset-before-request</code></li>
 <li><code>connect-failure</code></li>
+<li><code>envoy-ratelimited</code></li>
 <li><code>retriable-4xx</code></li>
 <li><code>refused-stream</code></li>
 <li><code>retriable-status-codes</code></li>
 <li><code>retriable-headers</code></li>
+<li><code>http3-post-connect-failure</code></li>
 </ul>
 <p>Supported <a href="https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/router_filter#x-envoy-retry-grpc-on">gRPC conditions</a>:</p>
 <ul>
@@ -2198,14 +3565,14 @@ Ignored if NumRetries is not supplied.</p>
 <p>
 <p>Route contains the set of routes for a virtual host.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>conditions</code>
@@ -2220,9 +3587,9 @@ Ignored if NumRetries is not supplied.</p>
 <em>(Optional)</em>
 <p>Conditions are a set of rules that are applied to a Route.
 When applied, they are merged using AND, with one exception:
-There can be only one Prefix MatchCondition per Conditions slice.
-More than one Prefix, or contradictory Conditions, will make the
-route invalid.</p>
+There can be only one Prefix, Exact or Regex MatchCondition
+per Conditions slice. More than one of these condition types,
+or contradictory Conditions, will make the route invalid.</p>
 </td>
 </tr>
 <tr>
@@ -2236,6 +3603,7 @@ route invalid.</p>
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Services are the services to proxy traffic.</p>
 </td>
 </tr>
@@ -2372,6 +3740,14 @@ HeadersPolicy
 <td>
 <em>(Optional)</em>
 <p>The policy for managing request headers during proxying.</p>
+<p>You may dynamically rewrite the Host header to be forwarded
+upstream to the content of a request header using
+the below format &ldquo;%REQ(X-Header-Name)%&rdquo;. If the value of the header
+is empty, it is ignored.</p>
+<p>*NOTE: Pay attention to the potential security implications of using this option.
+Provided header must come from trusted source.</p>
+<p>**NOTE: The header rewrite is only done while forwarding and has no bearing
+on the routing decision.</p>
 </td>
 </tr>
 <tr>
@@ -2392,6 +3768,23 @@ Rewriting the &lsquo;Host&rsquo; header is not supported.</p>
 </tr>
 <tr>
 <td style="white-space:nowrap">
+<code>cookieRewritePolicies</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.CookieRewritePolicy">
+[]CookieRewritePolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The policies for rewriting Set-Cookie header attributes. Note that
+rewritten cookie names must be unique in this list. Order rewrite
+policies are specified in does not matter.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
 <code>rateLimitPolicy</code>
 <br>
 <em>
@@ -2403,6 +3796,100 @@ RateLimitPolicy
 <td>
 <em>(Optional)</em>
 <p>The policy for rate limiting on the route.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>requestRedirectPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.HTTPRequestRedirectPolicy">
+HTTPRequestRedirectPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RequestRedirectPolicy defines an HTTP redirection.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>directResponsePolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.HTTPDirectResponsePolicy">
+HTTPDirectResponsePolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DirectResponsePolicy returns an arbitrary HTTP response directly.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>internalRedirectPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.HTTPInternalRedirectPolicy">
+HTTPInternalRedirectPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The policy to define when to handle redirects responses internally.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>jwtVerificationPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.JWTVerificationPolicy">
+JWTVerificationPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The policy for verifying JWTs for requests to this route.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ipAllowPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.IPFilterPolicy">
+[]IPFilterPolicy
+</a>
+</em>
+</td>
+<td>
+<p>IPAllowFilterPolicy is a list of ipv4/6 filter rules for which matching
+requests should be allowed. All other requests will be denied.
+Only one of IPAllowFilterPolicy and IPDenyFilterPolicy can be defined.
+The rules defined here override any rules set on the root HTTPProxy.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ipDenyPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.IPFilterPolicy">
+[]IPFilterPolicy
+</a>
+</em>
+</td>
+<td>
+<p>IPDenyFilterPolicy is a list of ipv4/6 filter rules for which matching
+requests should be denied. All other requests will be allowed.
+Only one of IPAllowFilterPolicy and IPDenyFilterPolicy can be defined.
+The rules defined here override any rules set on the root HTTPProxy.</p>
 </td>
 </tr>
 </tbody>
@@ -2417,14 +3904,14 @@ RateLimitPolicy
 <p>
 <p>Service defines an Kubernetes Service to proxy traffic.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -2448,6 +3935,20 @@ int
 </td>
 <td>
 <p>Port (defined as Integer) to proxy traffic to since a service can have multiple defined.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>healthPort</code>
+<br>
+<em>
+int
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>HealthPort is the port for this service healthcheck.
+If not specified, Port is used for service healthchecks.</p>
 </td>
 </tr>
 <tr>
@@ -2501,7 +4002,12 @@ bool
 </em>
 </td>
 <td>
-<p>If Mirror is true the Service will receive a read only mirror of the traffic for this route.</p>
+<p>If Mirror is true the Service will receive a read only mirror of the traffic for this route.
+If Mirror is true, then fractional mirroring can be enabled by optionally setting the Weight
+field. Legal values for Weight are 1-100. Omitting the Weight field will result in 100% mirroring.
+NOTE: Setting Weight explicitly to 0 will unexpectedly result in 100% traffic mirroring. This
+occurs since we cannot distinguish omitted fields from those explicitly set to their default
+values</p>
 </td>
 </tr>
 <tr>
@@ -2516,8 +4022,7 @@ HeadersPolicy
 </td>
 <td>
 <em>(Optional)</em>
-<p>The policy for managing request headers during proxying.
-Rewriting the &lsquo;Host&rsquo; header is not supported.</p>
+<p>The policy for managing request headers during proxying.</p>
 </td>
 </tr>
 <tr>
@@ -2536,6 +4041,102 @@ HeadersPolicy
 Rewriting the &lsquo;Host&rsquo; header is not supported.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>cookieRewritePolicies</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.CookieRewritePolicy">
+[]CookieRewritePolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The policies for rewriting Set-Cookie header attributes.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>slowStartPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.SlowStartPolicy">
+SlowStartPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Slow start will gradually increase amount of traffic to a newly added endpoint.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1.SlowStartPolicy">SlowStartPolicy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1.Service">Service</a>)
+</p>
+<p>
+<p>SlowStartPolicy will gradually increase amount of traffic to a newly added endpoint.
+It can be used only with RoundRobin and WeightedLeastRequest load balancing strategies.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>window</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>The duration of slow start window.
+Duration is expressed in the Go <a href="https://godoc.org/time#ParseDuration">Duration format</a>.
+Valid time units are &ldquo;ns&rdquo;, &ldquo;us&rdquo; (or &ldquo;µs&rdquo;), &ldquo;ms&rdquo;, &ldquo;s&rdquo;, &ldquo;m&rdquo;, &ldquo;h&rdquo;.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>aggression</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The speed of traffic increase over the slow start window.
+Defaults to 1.0, so that endpoint would get linearly increasing amount of traffic.
+When increasing the value for this parameter, the speed of traffic ramp-up increases non-linearly.
+The value of aggression parameter should be greater than 0.0.</p>
+<p>More info: <a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/slow_start">https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/slow_start</a></p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>minWeightPercent</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The minimum or starting percentage of traffic to send to new endpoints.
+A non-zero value helps avoid a too small initial weight, which may cause endpoints in slow start mode to receive no traffic in the beginning of the slow start window.
+If not specified, the default is 10%.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.SubCondition">SubCondition
@@ -2552,14 +4153,14 @@ that is, they should be of the form &ldquo;ErrorPresent: true&rdquo;.</p>
 <p>The expected lifecycle for these errors is that they should only be present when the error or warning is,
 and should be removed when they are not relevant.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>type</code>
@@ -2579,7 +4180,7 @@ string
 <code>status</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#conditionstatus-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#conditionstatus-v1-meta">
 Kubernetes meta/v1.ConditionStatus
 </a>
 </em>
@@ -2628,14 +4229,14 @@ string
 <p>
 <p>TCPHealthCheckPolicy defines health checks on the upstream service.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>intervalSeconds</code>
@@ -2699,14 +4300,14 @@ uint32
 <p>
 <p>TCPProxy contains the set of services to proxy TCP connections.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>loadBalancerPolicy</code>
@@ -2797,14 +4398,14 @@ TCPHealthCheckPolicy
 <p>
 <p>TCPProxyInclude describes a target HTTPProxy document which contains the TCPProxy details.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -2842,14 +4443,14 @@ string
 <p>TLS describes tls properties. The SNI names that will be matched on
 are described in the HTTPProxy&rsquo;s Spec.VirtualHost.Fqdn field.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>secretName</code>
@@ -2859,10 +4460,12 @@ string
 </em>
 </td>
 <td>
-<p>SecretName is the name of a TLS secret in the current namespace.
+<p>SecretName is the name of a TLS secret.
 Either SecretName or Passthrough must be specified, but not both.
 If specified, the named secret must contain a matching certificate
-for the virtual host&rsquo;s FQDN.</p>
+for the virtual host&rsquo;s FQDN.
+The name can be optionally prefixed with namespace &ldquo;namespace/name&rdquo;.
+When cross-namespace reference is used, TLSCertificateDelegation resource must exist in the namespace to grant access to the secret.</p>
 </td>
 </tr>
 <tr>
@@ -2878,6 +4481,21 @@ string
 <p>MinimumProtocolVersion is the minimum TLS version this vhost should
 negotiate. Valid options are <code>1.2</code> (default) and <code>1.3</code>. Any other value
 defaults to TLS 1.2.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maximumProtocolVersion</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaximumProtocolVersion is the maximum TLS version this vhost should
+negotiate. Valid options are <code>1.2</code> and <code>1.3</code> (default). Any other value
+defaults to TLS 1.3.</p>
 </td>
 </tr>
 <tr>
@@ -2945,14 +4563,14 @@ be applied which handles all requests which don&rsquo;t match the SNI defined in
 <p>
 <p>TLSCertificateDelegationSpec defines the spec of the CRD</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>delegations</code>
@@ -2978,14 +4596,14 @@ be applied which handles all requests which don&rsquo;t match the SNI defined in
 <p>TLSCertificateDelegationStatus allows for the status of the delegation
 to be presented to the user.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>conditions</code>
@@ -3026,14 +4644,14 @@ The string &ldquo;infinity&rdquo; is also a valid input and specifies no timeout
 A value of &ldquo;0s&rdquo; will be treated as if the field were not set, i.e. by using Envoy&rsquo;s default behavior.</p>
 <p>Example input values: &ldquo;300ms&rdquo;, &ldquo;5s&rdquo;, &ldquo;1m&rdquo;.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>response</code>
@@ -3064,26 +4682,41 @@ If not specified, there is no per-route idle timeout, though a connection manage
 stream_idle_timeout default of 5m still applies.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>idleConnection</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Timeout for how long connection from the proxy to the upstream service is kept when there are no active requests.
+If not supplied, Envoy&rsquo;s default value of 1h applies.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1.UpstreamValidation">UpstreamValidation
 </h3>
 <p>
 (<em>Appears on:</em>
+<a href="#projectcontour.io/v1.RemoteJWKS">RemoteJWKS</a>, 
 <a href="#projectcontour.io/v1.Service">Service</a>, 
 <a href="#projectcontour.io/v1alpha1.ExtensionServiceSpec">ExtensionServiceSpec</a>)
 </p>
 <p>
 <p>UpstreamValidation defines how to verify the backend service&rsquo;s certificate</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>caSecret</code>
@@ -3093,7 +4726,11 @@ string
 </em>
 </td>
 <td>
-<p>Name or namespaced name of the Kubernetes secret used to validate the certificate presented by the backend</p>
+<p>Name or namespaced name of the Kubernetes secret used to validate the certificate presented by the backend.
+The secret must contain key named ca.crt.
+The name can be optionally prefixed with namespace &ldquo;namespace/name&rdquo;.
+When cross-namespace reference is used, TLSCertificateDelegation resource must exist in the namespace to grant access to the secret.
+Max length should be the actual max possible length of a namespaced name (63 + 253 + 1 = 317)</p>
 </td>
 </tr>
 <tr>
@@ -3105,7 +4742,22 @@ string
 </em>
 </td>
 <td>
-<p>Key which is expected to be present in the &lsquo;subjectAltName&rsquo; of the presented certificate</p>
+<p>Key which is expected to be present in the &lsquo;subjectAltName&rsquo; of the presented certificate.
+Deprecated: migrate to using the plural field subjectNames.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>subjectNames</code>
+<br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>List of keys, of which at least one is expected to be present in the &lsquo;subjectAltName of the
+presented certificate.</p>
 </td>
 </tr>
 </tbody>
@@ -3120,14 +4772,14 @@ string
 <p>VirtualHost appears at most once. If it is present, the object is considered
 to be a &ldquo;root&rdquo;.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>fqdn</code>
@@ -3209,6 +4861,55 @@ RateLimitPolicy
 <p>The policy for rate limiting on the virtual host.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>jwtProviders</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.JWTProvider">
+[]JWTProvider
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Providers to use for verifying JSON Web Tokens (JWTs) on the virtual host.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ipAllowPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.IPFilterPolicy">
+[]IPFilterPolicy
+</a>
+</em>
+</td>
+<td>
+<p>IPAllowFilterPolicy is a list of ipv4/6 filter rules for which matching
+requests should be allowed. All other requests will be denied.
+Only one of IPAllowFilterPolicy and IPDenyFilterPolicy can be defined.
+The rules defined here may be overridden in a Route.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ipDenyPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.IPFilterPolicy">
+[]IPFilterPolicy
+</a>
+</em>
+</td>
+<td>
+<p>IPDenyFilterPolicy is a list of ipv4/6 filter rules for which matching
+requests should be denied. All other requests will be allowed.
+Only one of IPAllowFilterPolicy and IPDenyFilterPolicy can be defined.
+The rules defined here may be overridden in a Route.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <hr/>
@@ -3229,18 +4930,17 @@ Resource Types:
 <p>
 <p>ContourConfiguration is the schema for a Contour instance.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td>
-<code>apiVersion</code>
-<br>
+<code>apiVersion</code></br>
 string</td>
 <td>
 <code>
@@ -3250,8 +4950,7 @@ projectcontour.io/v1alpha1
 </tr>
 <tr>
 <td>
-<code>kind</code>
-<br>
+<code>kind</code></br>
 string
 </td>
 <td><code>ContourConfiguration</code></td>
@@ -3261,7 +4960,7 @@ string
 <code>metadata</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -3343,8 +5042,8 @@ HealthConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>Health contains parameters to configure endpoints which Contour
-exposes to respond to Kubernetes health checks.</p>
+<p>Health defines the endpoints Contour uses to serve health checks.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8000 }.</p>
 </td>
 </tr>
 <tr>
@@ -3396,21 +5095,6 @@ HTTPProxyConfig
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>leaderElection</code>
-<br>
-<em>
-<a href="#projectcontour.io/v1alpha1.LeaderElectionConfig">
-LeaderElectionConfig
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>LeaderElection contains leader election parameters.</p>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
 <code>enableExternalNameService</code>
 <br>
 <em>
@@ -3419,8 +5103,24 @@ bool
 </td>
 <td>
 <em>(Optional)</em>
-<p>EnableExternalNameService allows processing of ExternalNameServices
-Defaults to disabled for security reasons.</p>
+<p>EnableExternalNameService allows processing of ExternalNameServices</p>
+<p>Contour&rsquo;s default is false for security reasons.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>globalExtAuth</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.AuthorizationServer">
+AuthorizationServer
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>GlobalExternalAuthorization allows envoys external authorization filter
+to be enabled for all virtual hosts.</p>
 </td>
 </tr>
 <tr>
@@ -3466,7 +5166,40 @@ MetricsConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>Metrics defines the endpoints Contour uses to serve to metrics.</p>
+<p>Metrics defines the endpoint Contour uses to serve metrics.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8000 }.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>tracing</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.TracingConfig">
+TracingConfig
+</a>
+</em>
+</td>
+<td>
+<p>Tracing defines properties for exporting trace data to OpenTelemetry.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>featureFlags</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.FeatureFlags">
+FeatureFlags
+</a>
+</em>
+</td>
+<td>
+<p>FeatureFlags defines toggle to enable new contour features.
+Available toggles are:
+useEndpointSlices - Configures contour to fetch endpoint data
+from k8s endpoint slices. defaults to true,
+If false then reads endpoint data from the k8s endpoints.</p>
 </td>
 </tr>
 </table>
@@ -3493,18 +5226,17 @@ ContourConfigurationStatus
 <p>
 <p>ContourDeployment is the schema for a Contour Deployment.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td>
-<code>apiVersion</code>
-<br>
+<code>apiVersion</code></br>
 string</td>
 <td>
 <code>
@@ -3514,8 +5246,7 @@ projectcontour.io/v1alpha1
 </tr>
 <tr>
 <td>
-<code>kind</code>
-<br>
+<code>kind</code></br>
 string
 </td>
 <td><code>ContourDeployment</code></td>
@@ -3525,7 +5256,7 @@ string
 <code>metadata</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -3551,20 +5282,44 @@ ContourDeploymentSpec
 <table style="border:none">
 <tr>
 <td style="white-space:nowrap">
-<code>replicas</code>
+<code>contour</code>
 <br>
 <em>
-int32
+<a href="#projectcontour.io/v1alpha1.ContourSettings">
+ContourSettings
+</a>
 </em>
 </td>
 <td>
-<p>Replicas is the desired number of Contour replicas. If unset,
-defaults to 2.</p>
+<em>(Optional)</em>
+<p>Contour specifies deployment-time settings for the Contour
+part of the installation, i.e. the xDS server/control plane
+and associated resources, including things like replica count
+for the Deployment, and node placement constraints for the pods.</p>
 </td>
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>config</code>
+<code>envoy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">
+EnvoySettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Envoy specifies deployment-time settings for the Envoy
+part of the installation, i.e. the xDS client/data plane
+and associated resources, including things like the workload
+type to use (DaemonSet or Deployment), node placement constraints
+for the pods, and various options for the Envoy service.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>runtimeSettings</code>
 <br>
 <em>
 <a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">
@@ -3573,7 +5328,25 @@ ContourConfigurationSpec
 </em>
 </td>
 <td>
-<p>Config is the config that the instances of Contour are to utilize.</p>
+<em>(Optional)</em>
+<p>RuntimeSettings is a ContourConfiguration spec to be used when
+provisioning a Contour instance that will influence aspects of
+the Contour instance&rsquo;s runtime behavior.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>resourceLabels</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ResourceLabels is a set of labels to add to the provisioned Contour resources.</p>
+<p>Deprecated: use Gateway.Spec.Infrastructure.Labels instead. This field will be
+removed in a future release.</p>
 </td>
 </tr>
 </table>
@@ -3602,18 +5375,17 @@ An ExtensionService resource binds a network service to the Contour
 API so that Contour API features can be implemented by collaborating
 components.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td>
-<code>apiVersion</code>
-<br>
+<code>apiVersion</code></br>
 string</td>
 <td>
 <code>
@@ -3623,8 +5395,7 @@ projectcontour.io/v1alpha1
 </tr>
 <tr>
 <td>
-<code>kind</code>
-<br>
+<code>kind</code></br>
 string
 </td>
 <td><code>ExtensionService</code></td>
@@ -3634,7 +5405,7 @@ string
 <code>metadata</code>
 <br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -3757,6 +5528,22 @@ v3 Envoy API, this is currently fixed at &ldquo;v3&rdquo;. However, other
 protocol options will be available in future.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>circuitBreakerPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.CircuitBreakers">
+CircuitBreakers
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CircuitBreakerPolicy specifies the circuit breaker budget across the extension service.
+If defined this overrides the global circuit breaker budget.</p>
+</td>
+</tr>
 </table>
 </td>
 </tr>
@@ -3775,16 +5562,49 @@ ExtensionServiceStatus
 </tr>
 </tbody>
 </table>
-<h3 id="projectcontour.io/v1alpha1.AccessLogFields">AccessLogFields
-(<code>[]string</code> alias)</h3>
+<h3 id="projectcontour.io/v1alpha1.AccessLogFormatString">AccessLogFormatString
+(<code>string</code> alias)</p></h3>
+<p>
+</p>
+<h3 id="projectcontour.io/v1alpha1.AccessLogJSONFields">AccessLogJSONFields
+(<code>[]string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.EnvoyLogging">EnvoyLogging</a>)
 </p>
 <p>
 </p>
+<h3 id="projectcontour.io/v1alpha1.AccessLogLevel">AccessLogLevel
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoyLogging">EnvoyLogging</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;critical&#34;</p></td>
+<td><p>Log only requests that result in an server error (i.e. 500+) response code.</p>
+</td>
+</tr><tr><td><p>&#34;disabled&#34;</p></td>
+<td><p>Disable the access log.</p>
+</td>
+</tr><tr><td><p>&#34;error&#34;</p></td>
+<td><p>Log only requests that result in a non-success (i.e. 300+) response code</p>
+</td>
+</tr><tr><td><p>&#34;info&#34;</p></td>
+<td><p>Log all requests. This is the default.</p>
+</td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.AccessLogType">AccessLogType
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.EnvoyLogging">EnvoyLogging</a>)
@@ -3792,8 +5612,112 @@ ExtensionServiceStatus
 <p>
 <p>AccessLogType is the name of a supported access logging mechanism.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;envoy&#34;</p></td>
+<td><p>DefaultAccessLogType is the default access log format.</p>
+</td>
+</tr><tr><td><p>&#34;envoy&#34;</p></td>
+<td><p>Set the Envoy access logging to Envoy&rsquo;s standard format.
+Can be customized using <code>accessLogFormatString</code>.</p>
+</td>
+</tr><tr><td><p>&#34;json&#34;</p></td>
+<td><p>Set the Envoy access logging to a JSON format.
+Can be customized using <code>jsonFields</code>.</p>
+</td>
+</tr></tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.CircuitBreakers">CircuitBreakers
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ClusterParameters">ClusterParameters</a>, 
+<a href="#projectcontour.io/v1alpha1.ExtensionServiceSpec">ExtensionServiceSpec</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>maxConnections</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The maximum number of connections that a single Envoy instance allows to the Kubernetes Service; defaults to 1024.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxPendingRequests</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The maximum number of pending requests that a single Envoy instance allows to the Kubernetes Service; defaults to 1024.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRequests</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The maximum parallel requests a single Envoy instance allows to the Kubernetes Service; defaults to 1024</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRetries</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The maximum number of parallel retries a single Envoy instance allows to the Kubernetes Service; defaults to 3.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>perHostMaxConnections</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<p>PerHostMaxConnections is the maximum number of connections
+that Envoy will allow to each individual host in a cluster.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.ClusterDNSFamilyType">ClusterDNSFamilyType
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.ClusterParameters">ClusterParameters</a>)
@@ -3802,6 +5726,27 @@ ExtensionServiceStatus
 <p>ClusterDNSFamilyType is the Ip family to use for resolving DNS
 names in an Envoy cluster config.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;all&#34;</p></td>
+<td><p>DNS lookups will attempt both v4 and v6 queries.</p>
+</td>
+</tr><tr><td><p>&#34;auto&#34;</p></td>
+<td><p>DNS lookups will do a v6 lookup first, followed by a v4 if that fails.</p>
+</td>
+</tr><tr><td><p>&#34;v4&#34;</p></td>
+<td><p>DNS lookups will only attempt v4 queries.</p>
+</td>
+</tr><tr><td><p>&#34;v6&#34;</p></td>
+<td><p>DNS lookups will only attempt v6 queries.</p>
+</td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.ClusterParameters">ClusterParameters
 </h3>
 <p>
@@ -3811,14 +5756,14 @@ names in an Envoy cluster config.</p>
 <p>
 <p>ClusterParameters holds various configurable cluster values.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>dnsLookupFamily</code>
@@ -3830,16 +5775,84 @@ ClusterDNSFamilyType
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>DNSLookupFamily defines how external names are looked up
 When configured as V4, the DNS resolver will only perform a lookup
 for addresses in the IPv4 family. If V6 is configured, the DNS resolver
 will only perform a lookup for addresses in the IPv6 family.
 If AUTO is configured, the DNS resolver will first perform a lookup
 for addresses in the IPv6 family and fallback to a lookup for addresses
-in the IPv4 family.
+in the IPv4 family. If ALL is specified, the DNS resolver will perform a lookup for
+both IPv4 and IPv6 families, and return all resolved addresses.
+When this is used, Happy Eyeballs will be enabled for upstream connections.
+Refer to Happy Eyeballs Support for more information.
 Note: This only applies to externalName clusters.</p>
 <p>See <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto.html#envoy-v3-api-enum-config-cluster-v3-cluster-dnslookupfamily">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto.html#envoy-v3-api-enum-config-cluster-v3-cluster-dnslookupfamily</a>
 for more information.</p>
+<p>Values: <code>auto</code> (default), <code>v4</code>, <code>v6</code>, <code>all</code>.</p>
+<p>Other values will produce an error.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRequestsPerConnection</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the maximum requests for upstream connections. If not specified, there is no limit.
+see <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/protocol.proto#envoy-v3-api-msg-config-core-v3-httpprotocoloptions">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/protocol.proto#envoy-v3-api-msg-config-core-v3-httpprotocoloptions</a>
+for more information.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>per-connection-buffer-limit-bytes</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the soft limit on size of the cluster’s new connection read and write buffers in bytes.
+If unspecified, an implementation defined default is applied (1MiB).
+see <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-field-config-cluster-v3-cluster-per-connection-buffer-limit-bytes">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-field-config-cluster-v3-cluster-per-connection-buffer-limit-bytes</a>
+for more information.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>circuitBreakers</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.CircuitBreakers">
+CircuitBreakers
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>GlobalCircuitBreakerDefaults specifies default circuit breaker budget across all services.
+If defined, this will be used as the default for all services.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>upstreamTLS</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.EnvoyTLS">
+EnvoyTLS
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>UpstreamTLS contains the TLS policy parameters for upstream connections</p>
 </td>
 </tr>
 </tbody>
@@ -3856,14 +5869,14 @@ for more information.</p>
 It contains most of all the options that can be customized, the
 other remaining options being command line flags.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>xdsServer</code>
@@ -3922,8 +5935,8 @@ HealthConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>Health contains parameters to configure endpoints which Contour
-exposes to respond to Kubernetes health checks.</p>
+<p>Health defines the endpoints Contour uses to serve health checks.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8000 }.</p>
 </td>
 </tr>
 <tr>
@@ -3975,21 +5988,6 @@ HTTPProxyConfig
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>leaderElection</code>
-<br>
-<em>
-<a href="#projectcontour.io/v1alpha1.LeaderElectionConfig">
-LeaderElectionConfig
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>LeaderElection contains leader election parameters.</p>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
 <code>enableExternalNameService</code>
 <br>
 <em>
@@ -3998,8 +5996,24 @@ bool
 </td>
 <td>
 <em>(Optional)</em>
-<p>EnableExternalNameService allows processing of ExternalNameServices
-Defaults to disabled for security reasons.</p>
+<p>EnableExternalNameService allows processing of ExternalNameServices</p>
+<p>Contour&rsquo;s default is false for security reasons.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>globalExtAuth</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.AuthorizationServer">
+AuthorizationServer
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>GlobalExternalAuthorization allows envoys external authorization filter
+to be enabled for all virtual hosts.</p>
 </td>
 </tr>
 <tr>
@@ -4045,7 +6059,40 @@ MetricsConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>Metrics defines the endpoints Contour uses to serve to metrics.</p>
+<p>Metrics defines the endpoint Contour uses to serve metrics.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8000 }.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>tracing</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.TracingConfig">
+TracingConfig
+</a>
+</em>
+</td>
+<td>
+<p>Tracing defines properties for exporting trace data to OpenTelemetry.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>featureFlags</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.FeatureFlags">
+FeatureFlags
+</a>
+</em>
+</td>
+<td>
+<p>FeatureFlags defines toggle to enable new contour features.
+Available toggles are:
+useEndpointSlices - Configures contour to fetch endpoint data
+from k8s endpoint slices. defaults to true,
+If false then reads endpoint data from the k8s endpoints.</p>
 </td>
 </tr>
 </tbody>
@@ -4059,14 +6106,14 @@ MetricsConfig
 <p>
 <p>ContourConfigurationStatus defines the observed state of a ContourConfiguration resource.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>conditions</code>
@@ -4094,33 +6141,57 @@ in case some other controller wants to add a Condition.</p>
 <a href="#projectcontour.io/v1alpha1.ContourDeployment">ContourDeployment</a>)
 </p>
 <p>
-<p>ContourDeploymentSpec defines the parameters of how a Contour
-instance should be configured.</p>
+<p>ContourDeploymentSpec specifies options for how a Contour
+instance should be provisioned.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
-<code>replicas</code>
+<code>contour</code>
 <br>
 <em>
-int32
+<a href="#projectcontour.io/v1alpha1.ContourSettings">
+ContourSettings
+</a>
 </em>
 </td>
 <td>
-<p>Replicas is the desired number of Contour replicas. If unset,
-defaults to 2.</p>
+<em>(Optional)</em>
+<p>Contour specifies deployment-time settings for the Contour
+part of the installation, i.e. the xDS server/control plane
+and associated resources, including things like replica count
+for the Deployment, and node placement constraints for the pods.</p>
 </td>
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>config</code>
+<code>envoy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">
+EnvoySettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Envoy specifies deployment-time settings for the Envoy
+part of the installation, i.e. the xDS client/data plane
+and associated resources, including things like the workload
+type to use (DaemonSet or Deployment), node placement constraints
+for the pods, and various options for the Envoy service.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>runtimeSettings</code>
 <br>
 <em>
 <a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">
@@ -4129,7 +6200,25 @@ ContourConfigurationSpec
 </em>
 </td>
 <td>
-<p>Config is the config that the instances of Contour are to utilize.</p>
+<em>(Optional)</em>
+<p>RuntimeSettings is a ContourConfiguration spec to be used when
+provisioning a Contour instance that will influence aspects of
+the Contour instance&rsquo;s runtime behavior.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>resourceLabels</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ResourceLabels is a set of labels to add to the provisioned Contour resources.</p>
+<p>Deprecated: use Gateway.Spec.Infrastructure.Labels instead. This field will be
+removed in a future release.</p>
 </td>
 </tr>
 </tbody>
@@ -4143,75 +6232,92 @@ ContourConfigurationSpec
 <p>
 <p>ContourDeploymentStatus defines the observed state of a ContourDeployment resource.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>conditions</code>
 <br>
 <em>
-<a href="#projectcontour.io/v1.DetailedCondition">
-[]DetailedCondition
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#condition-v1-meta">
+[]Kubernetes meta/v1.Condition
 </a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Conditions contains the current status of the Contour resource.</p>
-<p>Contour will update a single condition, <code>Valid</code>, that is in normal-true polarity.</p>
-<p>Contour will not modify any other Conditions set in this block,
-in case some other controller wants to add a Condition.</p>
+<p>Conditions describe the current conditions of the ContourDeployment resource.</p>
 </td>
 </tr>
 </tbody>
 </table>
-<h3 id="projectcontour.io/v1alpha1.DebugConfig">DebugConfig
+<h3 id="projectcontour.io/v1alpha1.ContourSettings">ContourSettings
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
+<a href="#projectcontour.io/v1alpha1.ContourDeploymentSpec">ContourDeploymentSpec</a>)
 </p>
 <p>
-<p>DebugConfig contains Contour specific troubleshooting options.</p>
+<p>ContourSettings contains settings for the Contour part of the installation,
+i.e. the xDS server/control plane and associated resources.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
-<code>address</code>
+<code>replicas</code>
 <br>
 <em>
-string
+int32
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Defines the Contour debug address interface.</p>
+<p>Deprecated: Use <code>DeploymentSettings.Replicas</code> instead.</p>
+<p>Replicas is the desired number of Contour replicas. If if unset,
+defaults to 2.</p>
+<p>if both <code>DeploymentSettings.Replicas</code> and this one is set, use <code>DeploymentSettings.Replicas</code>.</p>
 </td>
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>port</code>
+<code>nodePlacement</code>
 <br>
 <em>
-int
+<a href="#projectcontour.io/v1alpha1.NodePlacement">
+NodePlacement
+</a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Defines the Contour debug address port.</p>
+<p>NodePlacement describes node scheduling configuration of Contour pods.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>kubernetesLogLevel</code>
+<br>
+<em>
+byte
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>KubernetesLogLevel Enable Kubernetes client debug logging with log level. If unset,
+defaults to 0.</p>
 </td>
 </tr>
 <tr>
@@ -4225,23 +6331,276 @@ LogLevel
 </em>
 </td>
 <td>
-<p>DebugLogLevel defines the log level which Contour will
-use when outputting log information.</p>
+<em>(Optional)</em>
+<p>LogLevel sets the log level for Contour
+Allowed values are &ldquo;info&rdquo;, &ldquo;debug&rdquo;.</p>
 </td>
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>kubernetesLogLevel</code>
+<code>resources</code>
 <br>
 <em>
-uint
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#resourcerequirements-v1-core">
+Kubernetes core/v1.ResourceRequirements
+</a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>KubernetesDebugLogLevel defines the log level which Contour will
-use when outputting Kubernetes specific log information.</p>
-<p>Details: <a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md">https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md</a></p>
+<p>Compute Resources required by contour container.
+Cannot be updated.
+More info: <a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/</a></p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>deployment</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.DeploymentSettings">
+DeploymentSettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Deployment describes the settings for running contour as a <code>Deployment</code>.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>podAnnotations</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PodAnnotations defines annotations to add to the Contour pods.
+the annotations for Prometheus will be appended or overwritten with predefined value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>watchNamespaces</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.Namespace">
+[]Namespace
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>WatchNamespaces is an array of namespaces. Setting it will instruct the contour instance
+to only watch this subset of namespaces.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>disabledFeatures</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.Feature">
+[]Feature
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DisabledFeatures defines an array of resources that will be ignored by
+contour reconciler.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.CustomTag">CustomTag
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.TracingConfig">TracingConfig</a>)
+</p>
+<p>
+<p>CustomTag defines custom tags with unique tag name
+to create tags for the active span.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>tagName</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>TagName is the unique name of the custom tag.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>literal</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Literal is a static custom tag value.
+Precisely one of Literal, RequestHeaderName must be set.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>requestHeaderName</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RequestHeaderName indicates which request header
+the label value is obtained from.
+Precisely one of Literal, RequestHeaderName must be set.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.DaemonSetSettings">DaemonSetSettings
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
+</p>
+<p>
+<p>DaemonSetSettings contains settings for DaemonSet resources.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>updateStrategy</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#daemonsetupdatestrategy-v1-apps">
+Kubernetes apps/v1.DaemonSetUpdateStrategy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Strategy describes the deployment strategy to use to replace existing DaemonSet pods with new pods.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.DebugConfig">DebugConfig
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
+</p>
+<p>
+<p>DebugConfig contains Contour specific troubleshooting options.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>address</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the Contour debug address interface.</p>
+<p>Contour&rsquo;s default is &ldquo;127.0.0.1&rdquo;.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>port</code>
+<br>
+<em>
+int
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the Contour debug address port.</p>
+<p>Contour&rsquo;s default is 6060.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.DeploymentSettings">DeploymentSettings
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourSettings">ContourSettings</a>, 
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
+</p>
+<p>
+<p>DeploymentSettings contains settings for Deployment resources.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>replicas</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>Replicas is the desired number of replicas.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>strategy</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#deploymentstrategy-v1-apps">
+Kubernetes apps/v1.DeploymentStrategy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Strategy describes the deployment strategy to use to replace existing pods with new pods.</p>
 </td>
 </tr>
 </tbody>
@@ -4255,14 +6614,14 @@ use when outputting Kubernetes specific log information.</p>
 <p>
 <p>EnvoyConfig defines how Envoy is to be Configured from Contour.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>listener</code>
@@ -4274,6 +6633,7 @@ EnvoyListenerConfig
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Listener hold various configurable Envoy listener values.</p>
 </td>
 </tr>
@@ -4288,7 +6648,9 @@ NamespacedName
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Service holds Envoy service parameters for setting Ingress status.</p>
+<p>Contour&rsquo;s default is { namespace: &ldquo;projectcontour&rdquo;, name: &ldquo;envoy&rdquo; }.</p>
 </td>
 </tr>
 <tr>
@@ -4302,7 +6664,9 @@ EnvoyListener
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines the HTTP Listener for Envoy.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8080, accessLog: &ldquo;/dev/stdout&rdquo; }.</p>
 </td>
 </tr>
 <tr>
@@ -4316,7 +6680,25 @@ EnvoyListener
 </em>
 </td>
 <td>
-<p>Defines the HTTP Listener for Envoy.</p>
+<em>(Optional)</em>
+<p>Defines the HTTPS Listener for Envoy.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8443, accessLog: &ldquo;/dev/stdout&rdquo; }.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>health</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.HealthConfig">
+HealthConfig
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Health defines the endpoint Envoy uses to serve health checks.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8002 }.</p>
 </td>
 </tr>
 <tr>
@@ -4330,7 +6712,9 @@ MetricsConfig
 </em>
 </td>
 <td>
-<p>Metrics defines the endpoints Envoy use to serve to metrics.</p>
+<em>(Optional)</em>
+<p>Metrics defines the endpoint Envoy uses to serve metrics.</p>
+<p>Contour&rsquo;s default is { address: &ldquo;0.0.0.0&rdquo;, port: 8002 }.</p>
 </td>
 </tr>
 <tr>
@@ -4362,6 +6746,7 @@ EnvoyLogging
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Logging defines how Envoy&rsquo;s logs can be configured.</p>
 </td>
 </tr>
@@ -4376,10 +6761,13 @@ EnvoyLogging
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>DefaultHTTPVersions defines the default set of HTTPS
 versions the proxy should accept. HTTP versions are
 strings of the form &ldquo;HTTP/xx&rdquo;. Supported versions are
 &ldquo;HTTP/1.1&rdquo; and &ldquo;HTTP/2&rdquo;.</p>
+<p>Values: <code>HTTP/1.1</code>, <code>HTTP/2</code> (default: both).</p>
+<p>Other values will produce an error.</p>
 </td>
 </tr>
 <tr>
@@ -4409,6 +6797,7 @@ ClusterParameters
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Cluster holds various configurable Envoy cluster values that can
 be set in the config file.</p>
 </td>
@@ -4424,6 +6813,7 @@ NetworkParameters
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Network holds various configurable Envoy network values.</p>
 </td>
 </tr>
@@ -4438,14 +6828,14 @@ NetworkParameters
 <p>
 <p>EnvoyListener defines parameters for an Envoy Listener.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>address</code>
@@ -4455,6 +6845,7 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines an Envoy Listener Address.</p>
 </td>
 </tr>
@@ -4467,6 +6858,7 @@ int
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines an Envoy listener Port.</p>
 </td>
 </tr>
@@ -4479,6 +6871,7 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>AccessLog defines where Envoy logs are outputted for this listener.</p>
 </td>
 </tr>
@@ -4493,14 +6886,14 @@ string
 <p>
 <p>EnvoyListenerConfig hold various configurable Envoy listener values.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>useProxyProtocol</code>
@@ -4510,7 +6903,9 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Use PROXY protocol for all listeners.</p>
+<p>Contour&rsquo;s default is false.</p>
 </td>
 </tr>
 <tr>
@@ -4522,12 +6917,50 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>DisableAllowChunkedLength disables the RFC-compliant Envoy behavior to
 strip the &ldquo;Content-Length&rdquo; header if &ldquo;Transfer-Encoding: chunked&rdquo; is
 also set. This is an emergency off-switch to revert back to Envoy&rsquo;s
 default behavior in case of failures. Please file an issue if failures
 are encountered.
 See: <a href="https://github.com/projectcontour/contour/issues/3221">https://github.com/projectcontour/contour/issues/3221</a></p>
+<p>Contour&rsquo;s default is false.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>disableMergeSlashes</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DisableMergeSlashes disables Envoy&rsquo;s non-standard merge_slashes path transformation option
+which strips duplicate slashes from request URL paths.</p>
+<p>Contour&rsquo;s default is false.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>serverHeaderTransformation</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.ServerHeaderTransformationType">
+ServerHeaderTransformationType
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the action to be applied to the Server header on the response path.
+When configured as overwrite, overwrites any Server header with &ldquo;envoy&rdquo;.
+When configured as append_if_absent, if a Server header is present, pass it through, otherwise set it to &ldquo;envoy&rdquo;.
+When configured as pass_through, pass through the value of the Server header, and do not append a header if none is present.</p>
+<p>Values: <code>overwrite</code> (default), <code>append_if_absent</code>, <code>pass_through</code></p>
+<p>Other values will produce an error.
+Contour&rsquo;s default is overwrite.</p>
 </td>
 </tr>
 <tr>
@@ -4539,8 +6972,42 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>ConnectionBalancer. If the value is exact, the listener will use the exact connection balancer
 See <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/listener.proto#envoy-api-msg-listener-connectionbalanceconfig">https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/listener.proto#envoy-api-msg-listener-connectionbalanceconfig</a>
+for more information.</p>
+<p>Values: (empty string): use the default ConnectionBalancer, <code>exact</code>: use the Exact ConnectionBalancer.</p>
+<p>Other values will produce an error.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRequestsPerConnection</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the maximum requests for downstream connections. If not specified, there is no limit.
+see <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/protocol.proto#envoy-v3-api-msg-config-core-v3-httpprotocoloptions">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/protocol.proto#envoy-v3-api-msg-config-core-v3-httpprotocoloptions</a>
+for more information.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>per-connection-buffer-limit-bytes</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the soft limit on size of the listener’s new connection read and write buffers in bytes.
+If unspecified, an implementation defined default is applied (1MiB).
+see <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener.proto#envoy-v3-api-field-config-listener-v3-listener-per-connection-buffer-limit-bytes">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener.proto#envoy-v3-api-field-config-listener-v3-listener-per-connection-buffer-limit-bytes</a>
 for more information.</p>
 </td>
 </tr>
@@ -4555,7 +7022,73 @@ EnvoyTLS
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>TLS holds various configurable Envoy TLS listener values.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>socketOptions</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.SocketOptions">
+SocketOptions
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SocketOptions defines configurable socket options for the listeners.
+Single set of options are applied to all listeners.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxRequestsPerIOCycle</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the limit on number of HTTP requests that Envoy will process from a single
+connection in a single I/O cycle. Requests over this limit are processed in subsequent
+I/O cycles. Can be used as a mitigation for CVE-2023-44487 when abusive traffic is
+detected. Configures the http.max_requests_per_io_cycle Envoy runtime setting. The default
+value when this is not set is no limit.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>httpMaxConcurrentStreams</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the value for SETTINGS_MAX_CONCURRENT_STREAMS Envoy will advertise in the
+SETTINGS frame in HTTP/2 connections and the limit for concurrent streams allowed
+for a peer on a single HTTP/2 connection. It is recommended to not set this lower
+than 100 but this field can be used to bound resource usage by HTTP/2 connections
+and mitigate attacks like CVE-2023-44487. The default value when this is not set is
+unlimited.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxConnectionsPerListener</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the limit on number of active connections to a listener. The limit is applied
+per listener. The default value when this is not set is unlimited.</p>
 </td>
 </tr>
 </tbody>
@@ -4569,14 +7102,14 @@ EnvoyTLS
 <p>
 <p>EnvoyLogging defines how Envoy&rsquo;s logs can be configured.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>accessLogFormat</code>
@@ -4588,8 +7121,10 @@ AccessLogType
 </em>
 </td>
 <td>
-<p>AccessLogFormat sets the global access log format.
-Valid options are &lsquo;envoy&rsquo; or &lsquo;json&rsquo;</p>
+<em>(Optional)</em>
+<p>AccessLogFormat sets the global access log format.</p>
+<p>Values: <code>envoy</code> (default), <code>json</code>.</p>
+<p>Other values will produce an error.</p>
 </td>
 </tr>
 <tr>
@@ -4608,18 +7143,260 @@ When empty, Envoy&rsquo;s default format is used.</p>
 </tr>
 <tr>
 <td style="white-space:nowrap">
-<code>jsonFields</code>
+<code>accessLogJSONFields</code>
 <br>
 <em>
-<a href="#projectcontour.io/v1alpha1.AccessLogFields">
-AccessLogFields
+<a href="#projectcontour.io/v1alpha1.AccessLogJSONFields">
+AccessLogJSONFields
 </a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>AccessLogFields sets the fields that JSON logging will
+<p>AccessLogJSONFields sets the fields that JSON logging will
 output when AccessLogFormat is json.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>accessLogLevel</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.AccessLogLevel">
+AccessLogLevel
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AccessLogLevel sets the verbosity level of the access log.</p>
+<p>Values: <code>info</code> (default, all requests are logged), <code>error</code> (all non-success requests, i.e. 300+ response code, are logged), <code>critical</code> (all 5xx requests are logged) and <code>disabled</code>.</p>
+<p>Other values will produce an error.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourDeploymentSpec">ContourDeploymentSpec</a>)
+</p>
+<p>
+<p>EnvoySettings contains settings for the Envoy part of the installation,
+i.e. the xDS client/data plane and associated resources.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>workloadType</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.WorkloadType">
+WorkloadType
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>WorkloadType is the type of workload to install Envoy
+as. Choices are DaemonSet and Deployment. If unset, defaults
+to DaemonSet.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>replicas</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Deprecated: Use <code>DeploymentSettings.Replicas</code> instead.</p>
+<p>Replicas is the desired number of Envoy replicas. If WorkloadType
+is not &ldquo;Deployment&rdquo;, this field is ignored. Otherwise, if unset,
+defaults to 2.</p>
+<p>if both <code>DeploymentSettings.Replicas</code> and this one is set, use <code>DeploymentSettings.Replicas</code>.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>networkPublishing</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.NetworkPublishing">
+NetworkPublishing
+</a>
+</em>
+</td>
+<td>
+<p>NetworkPublishing defines how to expose Envoy to a network.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>nodePlacement</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.NodePlacement">
+NodePlacement
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodePlacement describes node scheduling configuration of Envoy pods.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>extraVolumes</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#volume-v1-core">
+[]Kubernetes core/v1.Volume
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ExtraVolumes holds the extra volumes to add.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>extraVolumeMounts</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#volumemount-v1-core">
+[]Kubernetes core/v1.VolumeMount
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ExtraVolumeMounts holds the extra volume mounts to add (normally used with extraVolumes).</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>podAnnotations</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PodAnnotations defines annotations to add to the Envoy pods.
+the annotations for Prometheus will be appended or overwritten with predefined value.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>resources</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#resourcerequirements-v1-core">
+Kubernetes core/v1.ResourceRequirements
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Compute Resources required by envoy container.
+Cannot be updated.
+More info: <a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/</a></p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>logLevel</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.LogLevel">
+LogLevel
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>LogLevel sets the log level for Envoy.
+Allowed values are &ldquo;trace&rdquo;, &ldquo;debug&rdquo;, &ldquo;info&rdquo;, &ldquo;warn&rdquo;, &ldquo;error&rdquo;, &ldquo;critical&rdquo;, &ldquo;off&rdquo;.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>daemonSet</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.DaemonSetSettings">
+DaemonSetSettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DaemonSet describes the settings for running envoy as a <code>DaemonSet</code>.
+if <code>WorkloadType</code> is <code>Deployment</code>,it&rsquo;s must be nil</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>deployment</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.DeploymentSettings">
+DeploymentSettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Deployment describes the settings for running envoy as a <code>Deployment</code>.
+if <code>WorkloadType</code> is <code>DaemonSet</code>,it&rsquo;s must be nil</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>baseID</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The base ID to use when allocating shared memory regions.
+if Envoy needs to be run multiple times on the same machine, each running Envoy will need a unique base ID
+so that the shared memory regions do not conflict.
+defaults to 0.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>overloadMaxHeapSize</code>
+<br>
+<em>
+uint64
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OverloadMaxHeapSize defines the maximum heap memory of the envoy controlled by the overload manager.
+When the value is greater than 0, the overload manager is enabled,
+and when envoy reaches 95% of the maximum heap size, it performs a shrink heap operation,
+When it reaches 98% of the maximum heap size, Envoy Will stop accepting requests.
+More info: <a href="https://projectcontour.io/docs/main/config/overload-manager/">https://projectcontour.io/docs/main/config/overload-manager/</a></p>
 </td>
 </tr>
 </tbody>
@@ -4628,19 +7405,20 @@ output when AccessLogFormat is json.</p>
 </h3>
 <p>
 (<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ClusterParameters">ClusterParameters</a>, 
 <a href="#projectcontour.io/v1alpha1.EnvoyListenerConfig">EnvoyListenerConfig</a>)
 </p>
 <p>
 <p>EnvoyTLS describes tls parameters for Envoy listneners.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>minimumProtocolVersion</code>
@@ -4650,8 +7428,27 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>MinimumProtocolVersion is the minimum TLS version this vhost should
-negotiate. Valid options are <code>1.2</code> (default) and <code>1.3</code>.</p>
+negotiate.</p>
+<p>Values: <code>1.2</code> (default), <code>1.3</code>.</p>
+<p>Other values will produce an error.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maximumProtocolVersion</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaximumProtocolVersion is the maximum TLS version this vhost should
+negotiate.</p>
+<p>Values: <code>1.2</code>, <code>1.3</code>(default).</p>
+<p>Other values will produce an error.</p>
 </td>
 </tr>
 <tr>
@@ -4659,17 +7456,39 @@ negotiate. Valid options are <code>1.2</code> (default) and <code>1.3</code>.</p
 <code>cipherSuites</code>
 <br>
 <em>
-<a href="#projectcontour.io/v1alpha1.TLSCipherType">
-[]TLSCipherType
-</a>
+[]string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>CipherSuites defines the TLS ciphers to be supported by Envoy TLS
 listeners when negotiating TLS 1.2. Ciphers are validated against the
 set that Envoy supports by default. This parameter should only be used
 by advanced users. Note that these will be ignored when TLS 1.3 is in
 use.</p>
+<p>This field is optional; when it is undefined, a Contour-managed ciphersuite list
+will be used, which may be updated to keep it secure.</p>
+<p>Contour&rsquo;s default list is:
+- &ldquo;[ECDHE-ECDSA-AES128-GCM-SHA256|ECDHE-ECDSA-CHACHA20-POLY1305]&rdquo;
+- &ldquo;[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]&rdquo;
+- &ldquo;ECDHE-ECDSA-AES256-GCM-SHA384&rdquo;
+- &ldquo;ECDHE-RSA-AES256-GCM-SHA384&rdquo;</p>
+<p>Ciphers provided are validated against the following list:
+- &ldquo;[ECDHE-ECDSA-AES128-GCM-SHA256|ECDHE-ECDSA-CHACHA20-POLY1305]&rdquo;
+- &ldquo;[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]&rdquo;
+- &ldquo;ECDHE-ECDSA-AES128-GCM-SHA256&rdquo;
+- &ldquo;ECDHE-RSA-AES128-GCM-SHA256&rdquo;
+- &ldquo;ECDHE-ECDSA-AES128-SHA&rdquo;
+- &ldquo;ECDHE-RSA-AES128-SHA&rdquo;
+- &ldquo;AES128-GCM-SHA256&rdquo;
+- &ldquo;AES128-SHA&rdquo;
+- &ldquo;ECDHE-ECDSA-AES256-GCM-SHA384&rdquo;
+- &ldquo;ECDHE-RSA-AES256-GCM-SHA384&rdquo;
+- &ldquo;ECDHE-ECDSA-AES256-SHA&rdquo;
+- &ldquo;ECDHE-RSA-AES256-SHA&rdquo;
+- &ldquo;AES256-GCM-SHA384&rdquo;
+- &ldquo;AES256-SHA&rdquo;</p>
+<p>Contour recommends leaving this undefined unless you are sure you must.</p>
 <p>See: <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/common.proto#extensions-transport-sockets-tls-v3-tlsparameters">https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/common.proto#extensions-transport-sockets-tls-v3-tlsparameters</a>
 Note: This list is a superset of what is valid for stock Envoy builds and those using BoringSSL FIPS.</p>
 </td>
@@ -4677,7 +7496,7 @@ Note: This list is a superset of what is valid for stock Envoy builds and those 
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1alpha1.ExtensionProtocolVersion">ExtensionProtocolVersion
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.ExtensionServiceSpec">ExtensionServiceSpec</a>)
@@ -4687,6 +7506,23 @@ Note: This list is a superset of what is valid for stock Envoy builds and those 
 to access extension services. The only version currently supported
 is &ldquo;v3&rdquo;.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;v2&#34;</p></td>
+<td><p>SupportProtocolVersion2 requests the &ldquo;v2&rdquo; support protocol version.</p>
+<p>Deprecated: this protocol version is no longer supported and the
+constant is retained for backwards compatibility only.</p>
+</td>
+</tr><tr><td><p>&#34;v3&#34;</p></td>
+<td><p>SupportProtocolVersion3 requests the &ldquo;v3&rdquo; support protocol version.</p>
+</td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.ExtensionServiceSpec">ExtensionServiceSpec
 </h3>
 <p>
@@ -4696,14 +7532,14 @@ is &ldquo;v3&rdquo;.</p>
 <p>
 <p>ExtensionServiceSpec defines the desired state of an ExtensionService resource.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>services</code>
@@ -4803,6 +7639,22 @@ v3 Envoy API, this is currently fixed at &ldquo;v3&rdquo;. However, other
 protocol options will be available in future.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>circuitBreakerPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.CircuitBreakers">
+CircuitBreakers
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CircuitBreakerPolicy specifies the circuit breaker budget across the extension service.
+If defined this overrides the global circuit breaker budget.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1alpha1.ExtensionServiceStatus">ExtensionServiceStatus
@@ -4815,14 +7667,14 @@ protocol options will be available in future.</p>
 <p>ExtensionServiceStatus defines the observed state of an
 ExtensionService resource.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>conditions</code>
@@ -4853,14 +7705,14 @@ in case some other controller wants to add a Condition.</p>
 <p>ExtensionServiceTarget defines an Kubernetes Service to target with
 extension service traffic.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -4901,6 +7753,16 @@ uint32
 </tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1alpha1.FeatureFlags">FeatureFlags
+(<code>[]string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
+</p>
+<p>
+<p>FeatureFlags defines the set of feature flags
+to toggle new contour features.</p>
+</p>
 <h3 id="projectcontour.io/v1alpha1.GatewayConfig">GatewayConfig
 </h3>
 <p>
@@ -4910,26 +7772,27 @@ uint32
 <p>
 <p>GatewayConfig holds the config for Gateway API controllers.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
-<code>controllerName</code>
+<code>gatewayRef</code>
 <br>
 <em>
-string
+<a href="#projectcontour.io/v1alpha1.NamespacedName">
+NamespacedName
+</a>
 </em>
 </td>
 <td>
-<p>ControllerName is used to determine whether Contour should reconcile a
-GatewayClass. The string takes the form of &ldquo;projectcontour.io/<namespace>/contour&rdquo;.
-If unset, the gatewayclass controller will not be started.</p>
+<p>GatewayRef defines the specific Gateway that this Contour
+instance corresponds to.</p>
 </td>
 </tr>
 </tbody>
@@ -4943,14 +7806,14 @@ If unset, the gatewayclass controller will not be started.</p>
 <p>
 <p>HTTPProxyConfig defines parameters on HTTPProxy.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>disablePermitInsecure</code>
@@ -4960,8 +7823,10 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>DisablePermitInsecure disables the use of the
 permitInsecure field in HTTPProxy.</p>
+<p>Contour&rsquo;s default is false.</p>
 </td>
 </tr>
 <tr>
@@ -4996,7 +7861,7 @@ use as fallback when a non-SNI request is received.</p>
 </tbody>
 </table>
 <h3 id="projectcontour.io/v1alpha1.HTTPVersionType">HTTPVersionType
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.EnvoyConfig">EnvoyConfig</a>)
@@ -5004,6 +7869,21 @@ use as fallback when a non-SNI request is received.</p>
 <p>
 <p>HTTPVersionType is the name of a supported HTTP version.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;HTTP/1.1&#34;</p></td>
+<td><p>HTTPVersion1 is the name of the HTTP/1.1 version.</p>
+</td>
+</tr><tr><td><p>&#34;HTTP/2&#34;</p></td>
+<td><p>HTTPVersion2 is the name of the HTTP/2 version.</p>
+</td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.HeadersPolicy">HeadersPolicy
 </h3>
 <p>
@@ -5012,14 +7892,14 @@ use as fallback when a non-SNI request is received.</p>
 </p>
 <p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>set</code>
@@ -5050,19 +7930,20 @@ map[string]string
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
+<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>, 
+<a href="#projectcontour.io/v1alpha1.EnvoyConfig">EnvoyConfig</a>)
 </p>
 <p>
-<p>HealthConfig defines the endpoints Contour will serve to enable health checks.</p>
+<p>HealthConfig defines the endpoints to enable health checks.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>address</code>
@@ -5072,7 +7953,8 @@ string
 </em>
 </td>
 <td>
-<p>Defines the Contour health address interface.</p>
+<em>(Optional)</em>
+<p>Defines the health address interface.</p>
 </td>
 </tr>
 <tr>
@@ -5084,7 +7966,8 @@ int
 </em>
 </td>
 <td>
-<p>Defines the Contour health port.</p>
+<em>(Optional)</em>
+<p>Defines the health port.</p>
 </td>
 </tr>
 </tbody>
@@ -5098,25 +7981,25 @@ int
 <p>
 <p>IngressConfig defines ingress specific config items.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
-<code>className</code>
+<code>classNames</code>
 <br>
 <em>
-string
+[]string
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Ingress Class Name Contour should use.</p>
+<p>Ingress Class Names Contour should use.</p>
 </td>
 </tr>
 <tr>
@@ -5134,96 +8017,46 @@ string
 </tr>
 </tbody>
 </table>
-<h3 id="projectcontour.io/v1alpha1.LeaderElectionConfig">LeaderElectionConfig
-</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
-</p>
-<p>
-<p>LeaderElectionConfig holds the config bits for leader election
-inside the  config file.</p>
-</p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
-<tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody class="border-top">
-<tr>
-<td style="white-space:nowrap">
-<code>leaseDuration</code>
-<br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
-<code>renewDeadline</code>
-<br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
-<code>retryPeriod</code>
-<br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
-<code>configmap</code>
-<br>
-<em>
-<a href="#projectcontour.io/v1alpha1.NamespacedName">
-NamespacedName
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-</td>
-</tr>
-<tr>
-<td style="white-space:nowrap">
-<code>disableLeaderElection</code>
-<br>
-<em>
-bool
-</em>
-</td>
-<td>
-</td>
-</tr>
-</tbody>
-</table>
 <h3 id="projectcontour.io/v1alpha1.LogLevel">LogLevel
-(<code>string</code> alias)</h3>
+(<code>string</code> alias)</p></h3>
 <p>
 (<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.DebugConfig">DebugConfig</a>)
+<a href="#projectcontour.io/v1alpha1.ContourSettings">ContourSettings</a>, 
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
 </p>
 <p>
 <p>LogLevel is the logging levels available.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;critical&#34;</p></td>
+<td><p>CriticalLog sets the log level for Envoy to <code>critical</code>.</p>
+</td>
+</tr><tr><td><p>&#34;debug&#34;</p></td>
+<td><p>DebugLog sets the log level for Contour/Envoy to <code>debug</code>.</p>
+</td>
+</tr><tr><td><p>&#34;error&#34;</p></td>
+<td><p>ErrorLog sets the log level for Envoy to <code>error</code>.</p>
+</td>
+</tr><tr><td><p>&#34;info&#34;</p></td>
+<td><p>InfoLog sets the log level for Contour/Envoy to <code>info</code>.</p>
+</td>
+</tr><tr><td><p>&#34;off&#34;</p></td>
+<td><p>OffLog disable logging for Envoy.</p>
+</td>
+</tr><tr><td><p>&#34;trace&#34;</p></td>
+<td><p>TraceLog sets the log level for Envoy to <code>trace</code>.</p>
+</td>
+</tr><tr><td><p>&#34;warn&#34;</p></td>
+<td><p>WarnLog sets the log level for Envoy to <code>warn</code>.</p>
+</td>
+</tr></tbody>
+</table>
 <h3 id="projectcontour.io/v1alpha1.MetricsConfig">MetricsConfig
 </h3>
 <p>
@@ -5234,14 +8067,14 @@ bool
 <p>
 <p>MetricsConfig defines the metrics endpoint.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>address</code>
@@ -5251,6 +8084,7 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines the metrics address interface.</p>
 </td>
 </tr>
@@ -5263,7 +8097,82 @@ int
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines the metrics port.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>tls</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.MetricsTLS">
+MetricsTLS
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>TLS holds TLS file config details.
+Metrics and health endpoints cannot have same port number when metrics is served over HTTPS.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.MetricsTLS">MetricsTLS
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.MetricsConfig">MetricsConfig</a>)
+</p>
+<p>
+<p>TLS holds TLS file config details.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>caFile</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CA filename.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>certFile</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Client certificate filename.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>keyFile</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Client key filename.</p>
 </td>
 </tr>
 </tbody>
@@ -5273,22 +8182,23 @@ int
 <p>
 (<em>Appears on:</em>
 <a href="#projectcontour.io/v1alpha1.EnvoyConfig">EnvoyConfig</a>, 
+<a href="#projectcontour.io/v1alpha1.GatewayConfig">GatewayConfig</a>, 
 <a href="#projectcontour.io/v1alpha1.HTTPProxyConfig">HTTPProxyConfig</a>, 
-<a href="#projectcontour.io/v1alpha1.LeaderElectionConfig">LeaderElectionConfig</a>, 
-<a href="#projectcontour.io/v1alpha1.RateLimitServiceConfig">RateLimitServiceConfig</a>)
+<a href="#projectcontour.io/v1alpha1.RateLimitServiceConfig">RateLimitServiceConfig</a>, 
+<a href="#projectcontour.io/v1alpha1.TracingConfig">TracingConfig</a>)
 </p>
 <p>
 <p>NamespacedName defines the namespace/name of the Kubernetes resource referred from the config file.
 Used for Contour config YAML file parsing, otherwise we could use K8s types.NamespacedName.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>name</code>
@@ -5322,14 +8232,14 @@ string
 <p>
 <p>NetworkParameters hold various configurable network values.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>numTrustedHops</code>
@@ -5345,6 +8255,7 @@ right side of the x-forwarded-for HTTP header to trust when determining the orig
 client’s IP address.</p>
 <p>See <a href="https://www.envoyproxy.io/docs/envoy/v1.17.0/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto?highlight=xff_num_trusted_hops">https://www.envoyproxy.io/docs/envoy/v1.17.0/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto?highlight=xff_num_trusted_hops</a>
 for more information.</p>
+<p>Contour&rsquo;s default is 0.</p>
 </td>
 </tr>
 <tr>
@@ -5356,8 +8267,232 @@ int
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Configure the port used to access the Envoy Admin interface.
 If configured to port &ldquo;0&rdquo; then the admin interface is disabled.</p>
+<p>Contour&rsquo;s default is 9001.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>stripTrailingHostDot</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>EnvoyStripTrailingHostDot defines if trailing dot of the host should be removed from host/authority header
+before any processing of request by HTTP filters or routing. This
+affects the upstream host header. Without setting this option to true, incoming
+requests with host example.com. will not match against route with domains
+match set to example.com.</p>
+<p>See <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto?highlight=strip_trailing_host_dot">https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto?highlight=strip_trailing_host_dot</a>
+for more information.</p>
+<p>Contour&rsquo;s default is false.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.NetworkPublishing">NetworkPublishing
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
+</p>
+<p>
+<p>NetworkPublishing defines the schema for publishing to a network.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>type</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.NetworkPublishingType">
+NetworkPublishingType
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NetworkPublishingType is the type of publishing strategy to use. Valid values are:</p>
+<ul>
+<li>LoadBalancerService</li>
+</ul>
+<p>In this configuration, network endpoints for Envoy use container networking.
+A Kubernetes LoadBalancer Service is created to publish Envoy network
+endpoints.</p>
+<p>See: <a href="https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer">https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer</a></p>
+<ul>
+<li>NodePortService</li>
+</ul>
+<p>Publishes Envoy network endpoints using a Kubernetes NodePort Service.</p>
+<p>In this configuration, Envoy network endpoints use container networking. A Kubernetes
+NodePort Service is created to publish the network endpoints.</p>
+<p>See: <a href="https://kubernetes.io/docs/concepts/services-networking/service/#nodeport">https://kubernetes.io/docs/concepts/services-networking/service/#nodeport</a></p>
+<p>NOTE:
+When provisioning an Envoy <code>NodePortService</code>, use Gateway Listeners&rsquo; port numbers to populate
+the Service&rsquo;s node port values, there&rsquo;s no way to auto-allocate them.</p>
+<p>See: <a href="https://github.com/projectcontour/contour/issues/4499">https://github.com/projectcontour/contour/issues/4499</a></p>
+<ul>
+<li>ClusterIPService</li>
+</ul>
+<p>Publishes Envoy network endpoints using a Kubernetes ClusterIP Service.</p>
+<p>In this configuration, Envoy network endpoints use container networking. A Kubernetes
+ClusterIP Service is created to publish the network endpoints.</p>
+<p>See: <a href="https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types">https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types</a></p>
+<p>If unset, defaults to LoadBalancerService.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>externalTrafficPolicy</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#serviceexternaltrafficpolicy-v1-core">
+Kubernetes core/v1.ServiceExternalTrafficPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ExternalTrafficPolicy describes how nodes distribute service traffic they
+receive on one of the Service&rsquo;s &ldquo;externally-facing&rdquo; addresses (NodePorts, ExternalIPs,
+and LoadBalancer IPs).</p>
+<p>If unset, defaults to &ldquo;Local&rdquo;.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>ipFamilyPolicy</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#ipfamilypolicy-v1-core">
+Kubernetes core/v1.IPFamilyPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IPFamilyPolicy represents the dual-stack-ness requested or required by
+this Service. If there is no value provided, then this field will be set
+to SingleStack. Services can be &ldquo;SingleStack&rdquo; (a single IP family),
+&ldquo;PreferDualStack&rdquo; (two IP families on dual-stack configured clusters or
+a single IP family on single-stack clusters), or &ldquo;RequireDualStack&rdquo;
+(two IP families on dual-stack configured clusters, otherwise fail).</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>serviceAnnotations</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ServiceAnnotations is the annotations to add to
+the provisioned Envoy service.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.NetworkPublishingType">NetworkPublishingType
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.NetworkPublishing">NetworkPublishing</a>)
+</p>
+<p>
+<p>NetworkPublishingType is a way to publish network endpoints.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;ClusterIPService&#34;</p></td>
+<td><p>ClusterIPServicePublishingType publishes a network endpoint using a Kubernetes
+ClusterIP Service.</p>
+</td>
+</tr><tr><td><p>&#34;LoadBalancerService&#34;</p></td>
+<td><p>LoadBalancerServicePublishingType publishes a network endpoint using a Kubernetes
+LoadBalancer Service.</p>
+</td>
+</tr><tr><td><p>&#34;NodePortService&#34;</p></td>
+<td><p>NodePortServicePublishingType publishes a network endpoint using a Kubernetes
+NodePort Service.</p>
+</td>
+</tr></tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.NodePlacement">NodePlacement
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourSettings">ContourSettings</a>, 
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
+</p>
+<p>
+<p>NodePlacement describes node scheduling configuration for pods.
+If nodeSelector and tolerations are specified, the scheduler will use both to
+determine where to place the pod(s).</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>nodeSelector</code>
+<br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeSelector is the simplest recommended form of node selection constraint
+and specifies a map of key-value pairs. For the pod to be eligible
+to run on a node, the node must have each of the indicated key-value pairs
+as labels (it can have additional labels as well).</p>
+<p>If unset, the pod(s) will be scheduled to any available node.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>tolerations</code>
+<br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.25/#toleration-v1-core">
+[]Kubernetes core/v1.Toleration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Tolerations work with taints to ensure that pods are not scheduled
+onto inappropriate nodes. One or more taints are applied to a node; this
+marks that the node should not accept any pods that do not tolerate the
+taints.</p>
+<p>The default is an empty list.</p>
+<p>See <a href="https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/">https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/</a>
+for additional details.</p>
 </td>
 </tr>
 </tbody>
@@ -5371,14 +8506,14 @@ If configured to port &ldquo;0&rdquo; then the admin interface is disabled.</p>
 <p>
 <p>PolicyConfig holds default policy used if not explicitly set by the user</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>requestHeaders</code>
@@ -5420,6 +8555,7 @@ bool
 <td>
 <em>(Optional)</em>
 <p>ApplyToIngress determines if the Policies will apply to ingress objects</p>
+<p>Contour&rsquo;s default is false.</p>
 </td>
 </tr>
 </tbody>
@@ -5433,14 +8569,14 @@ bool
 <p>
 <p>RateLimitServiceConfig defines properties of a global Rate Limit Service.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>extensionService</code>
@@ -5464,6 +8600,7 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Domain is passed to the Rate Limit Service.</p>
 </td>
 </tr>
@@ -5476,6 +8613,7 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>FailOpen defines whether to allow requests to proceed when the
 Rate Limit Service fails to respond with a valid rate limit
 decision within the timeout defined on the extension service.</p>
@@ -5490,11 +8628,121 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>EnableXRateLimitHeaders defines whether to include the X-RateLimit
 headers X-RateLimit-Limit, X-RateLimit-Remaining, and X-RateLimit-Reset
 (as defined by the IETF Internet-Draft linked below), on responses
 to clients when the Rate Limit Service is consulted for a request.</p>
 <p>ref. <a href="https://tools.ietf.org/id/draft-polli-ratelimit-headers-03.html">https://tools.ietf.org/id/draft-polli-ratelimit-headers-03.html</a></p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>enableResourceExhaustedCode</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>EnableResourceExhaustedCode enables translating error code 429 to
+grpc code RESOURCE_EXHAUSTED. When disabled it&rsquo;s translated to UNAVAILABLE</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>defaultGlobalRateLimitPolicy</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1.GlobalRateLimitPolicy">
+GlobalRateLimitPolicy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DefaultGlobalRateLimitPolicy allows setting a default global rate limit policy for every HTTPProxy.
+HTTPProxy can overwrite this configuration.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.ServerHeaderTransformationType">ServerHeaderTransformationType
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoyListenerConfig">EnvoyListenerConfig</a>)
+</p>
+<p>
+<p>ServerHeaderTransformation defines the action to be applied to the Server header on the response path</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;append_if_absent&#34;</p></td>
+<td><p>If no Server header is present, set it to &ldquo;envoy&rdquo;.
+If a Server header is present, pass it through.</p>
+</td>
+</tr><tr><td><p>&#34;overwrite&#34;</p></td>
+<td><p>Overwrite any Server header with &ldquo;envoy&rdquo;.
+This is the default value.</p>
+</td>
+</tr><tr><td><p>&#34;pass_through&#34;</p></td>
+<td><p>Pass through the value of the Server header, and do not append a header
+if none is present.</p>
+</td>
+</tr></tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.SocketOptions">SocketOptions
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoyListenerConfig">EnvoyListenerConfig</a>)
+</p>
+<p>
+<p>SocketOptions defines configurable socket options for Envoy listeners.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>tos</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the value for IPv4 TOS field (including 6 bit DSCP field) for IP packets originating from Envoy listeners.
+Single value is applied to all listeners.
+If listeners are bound to IPv6-only addresses, setting this option will cause an error.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>trafficClass</code>
+<br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Defines the value for IPv6 Traffic Class field (including 6 bit DSCP field) for IP packets originating from the Envoy listeners.
+Single value is applied to all listeners.
+If listeners are bound to IPv4-only addresses, setting this option will cause an error.</p>
 </td>
 </tr>
 </tbody>
@@ -5508,14 +8756,14 @@ to clients when the Rate Limit Service is consulted for a request.</p>
 <p>
 <p>TLS holds TLS file config details.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>caFile</code>
@@ -5564,19 +8812,12 @@ bool
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Allow serving the xDS gRPC API without TLS.</p>
 </td>
 </tr>
 </tbody>
 </table>
-<h3 id="projectcontour.io/v1alpha1.TLSCipherType">TLSCipherType
-(<code>string</code> alias)</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.EnvoyTLS">EnvoyTLS</a>)
-</p>
-<p>
-</p>
 <h3 id="projectcontour.io/v1alpha1.TimeoutParameters">TimeoutParameters
 </h3>
 <p>
@@ -5586,14 +8827,14 @@ bool
 <p>
 <p>TimeoutParameters holds various configurable proxy timeout values.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>requestTimeout</code>
@@ -5701,8 +8942,139 @@ GOAWAY frame has been sent, the proxy will refuse new streams.</p>
 for more information.</p>
 </td>
 </tr>
+<tr>
+<td style="white-space:nowrap">
+<code>connectTimeout</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ConnectTimeout defines how long the proxy should wait when establishing connection to upstream service.
+If not set, a default value of 2 seconds will be used.</p>
+<p>See <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-field-config-cluster-v3-cluster-connect-timeout">https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-field-config-cluster-v3-cluster-connect-timeout</a>
+for more information.</p>
+</td>
+</tr>
 </tbody>
 </table>
+<h3 id="projectcontour.io/v1alpha1.TracingConfig">TracingConfig
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.ContourConfigurationSpec">ContourConfigurationSpec</a>)
+</p>
+<p>
+<p>TracingConfig defines properties for exporting trace data to OpenTelemetry.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="white-space:nowrap">
+<code>includePodDetail</code>
+<br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IncludePodDetail defines a flag.
+If it is true, contour will add the pod name and namespace to the span of the trace.
+the default is true.
+Note: The Envoy pods MUST have the HOSTNAME and CONTOUR_NAMESPACE environment variables set for this to work properly.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>serviceName</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ServiceName defines the name for the service.
+contour&rsquo;s default is contour.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>overallSampling</code>
+<br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OverallSampling defines the sampling rate of trace data.
+contour&rsquo;s default is 100.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>maxPathTagLength</code>
+<br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxPathTagLength defines maximum length of the request path
+to extract and include in the HttpUrl tag.
+contour&rsquo;s default is 256.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>customTags</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.CustomTag">
+[]CustomTag
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CustomTags defines a list of custom tags with unique tag name.</p>
+</td>
+</tr>
+<tr>
+<td style="white-space:nowrap">
+<code>extensionService</code>
+<br>
+<em>
+<a href="#projectcontour.io/v1alpha1.NamespacedName">
+NamespacedName
+</a>
+</em>
+</td>
+<td>
+<p>ExtensionService identifies the extension service defining the otel-collector.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="projectcontour.io/v1alpha1.WorkloadType">WorkloadType
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#projectcontour.io/v1alpha1.EnvoySettings">EnvoySettings</a>)
+</p>
+<p>
+<p>WorkloadType is the type of Kubernetes workload to use for a component.</p>
+</p>
 <h3 id="projectcontour.io/v1alpha1.XDSServerConfig">XDSServerConfig
 </h3>
 <p>
@@ -5712,28 +9084,14 @@ for more information.</p>
 <p>
 <p>XDSServerConfig holds the config for the Contour xDS server.</p>
 </p>
-<table class="table table-striped table-borderless" style="border:none">
-<thead class="border-bottom">
+<table>
+<thead>
 <tr>
 <th>Field</th>
 <th>Description</th>
 </tr>
 </thead>
-<tbody class="border-top">
-<tr>
-<td style="white-space:nowrap">
-<code>type</code>
-<br>
-<em>
-<a href="#projectcontour.io/v1alpha1.XDSServerType">
-XDSServerType
-</a>
-</em>
-</td>
-<td>
-<p>Defines the XDSServer to use for <code>contour serve</code>.</p>
-</td>
-</tr>
+<tbody>
 <tr>
 <td style="white-space:nowrap">
 <code>address</code>
@@ -5743,7 +9101,9 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines the xDS gRPC API address which Contour will serve.</p>
+<p>Contour&rsquo;s default is &ldquo;0.0.0.0&rdquo;.</p>
 </td>
 </tr>
 <tr>
@@ -5755,7 +9115,9 @@ int
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Defines the xDS gRPC API port which Contour will serve.</p>
+<p>Contour&rsquo;s default is 8001.</p>
 </td>
 </tr>
 <tr>
@@ -5771,19 +9133,11 @@ TLS
 <td>
 <em>(Optional)</em>
 <p>TLS holds TLS file config details.</p>
+<p>Contour&rsquo;s default is { caFile: &ldquo;/certs/ca.crt&rdquo;, certFile: &ldquo;/certs/tls.cert&rdquo;, keyFile: &ldquo;/certs/tls.key&rdquo;, insecure: false }.</p>
 </td>
 </tr>
 </tbody>
 </table>
-<h3 id="projectcontour.io/v1alpha1.XDSServerType">XDSServerType
-(<code>string</code> alias)</h3>
-<p>
-(<em>Appears on:</em>
-<a href="#projectcontour.io/v1alpha1.XDSServerConfig">XDSServerConfig</a>)
-</p>
-<p>
-<p>XDSServerType is the type of xDS server implementation.</p>
-</p>
 <hr/>
 <p><em>
 Generated with <code>gen-crd-api-reference-docs</code>.

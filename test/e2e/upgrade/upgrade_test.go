@@ -12,76 +12,98 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package upgrade
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"testing"
 
-	. "github.com/onsi/ginkgo"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gexec"
 	"github.com/stretchr/testify/require"
-	v1 "k8s.io/api/core/v1"
-	networking_v1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apps_v1 "k8s.io/api/apps/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/projectcontour/contour/internal/k8s"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 var (
 	f = e2e.NewFramework(true)
-
-	// Contour container image to upgrade deployment to.
-	// If running against a kind cluster, this image should be loaded into
-	// the cluster prior to running this test suite.
-	contourUpgradeToImage string
 
 	// Contour version we are upgrading from.
 	contourUpgradeFromVersion string
 )
 
 func TestUpgrade(t *testing.T) {
+	RegisterFailHandler(Fail)
 	RunSpecs(t, "Upgrade Suite")
 }
 
 var _ = BeforeSuite(func() {
 	contourUpgradeFromVersion = os.Getenv("CONTOUR_UPGRADE_FROM_VERSION")
 	require.NotEmpty(f.T(), contourUpgradeFromVersion, "CONTOUR_UPGRADE_FROM_VERSION environment variable not supplied")
-	By("Testing Contour upgrade from " + contourUpgradeFromVersion)
-
-	contourUpgradeToImage = os.Getenv("CONTOUR_UPGRADE_TO_IMAGE")
-	require.NotEmpty(f.T(), contourUpgradeToImage, "CONTOUR_UPGRADE_TO_IMAGE environment variable not supplied")
-	By("upgrading Contour image to " + contourUpgradeToImage)
+	By("Testing upgrades from " + contourUpgradeFromVersion)
 })
 
-var _ = Describe("upgrading Contour", func() {
-	const appHost = "upgrade-echo.test.com"
+var _ = Describe("When upgrading", func() {
+	Describe("Contour", func() {
+		BeforeEach(func() {
+			cmd := exec.Command("../../scripts/install-contour-release.sh", contourUpgradeFromVersion)
+			sess, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+			require.NoError(f.T(), err)
 
-	f.NamespacedTest("contour-upgrade-test", func(namespace string) {
-		Specify("applications remain routable after the upgrade", func() {
-			By("deploying an app")
-			f.Fixtures.Echo.Deploy(namespace, "echo")
-			i := &networking_v1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: namespace,
-					Name:      "echo",
-				},
-				Spec: networking_v1.IngressSpec{
-					Rules: []networking_v1.IngressRule{
-						{
-							Host: appHost,
-							IngressRuleValue: networking_v1.IngressRuleValue{
-								HTTP: &networking_v1.HTTPIngressRuleValue{
-									Paths: []networking_v1.HTTPIngressPath{
-										{
-											Path:     "/",
-											PathType: ingressPathTypePtr(networking_v1.PathTypePrefix),
-											Backend: networking_v1.IngressBackend{
-												Service: &networking_v1.IngressServiceBackend{
-													Name: "echo",
-													Port: networking_v1.ServiceBackendPort{Number: 80},
+			Eventually(sess, f.RetryTimeout, f.RetryInterval).Should(gexec.Exit(0))
+
+			// We should be running in a multi-node cluster with a proper load
+			// balancer, so fetch load balancer ip to make requests to.
+			require.NoError(f.T(), f.Client.Get(context.TODO(), client.ObjectKeyFromObject(f.Deployment.EnvoyService), f.Deployment.EnvoyService))
+			require.NotEmpty(f.T(), f.Deployment.EnvoyService.Status.LoadBalancer.Ingress)
+			require.NotEmpty(f.T(), f.Deployment.EnvoyService.Status.LoadBalancer.Ingress[0].IP)
+			f.HTTP.HTTPURLBase = "http://" + f.Deployment.EnvoyService.Status.LoadBalancer.Ingress[0].IP
+			f.HTTP.HTTPSURLBase = "https://" + f.Deployment.EnvoyService.Status.LoadBalancer.Ingress[0].IP
+		})
+
+		AfterEach(func() {
+			require.NoError(f.T(), f.Deployment.DeleteResourcesForInclusterContour())
+		})
+
+		const appHost = "upgrade-echo.test.com"
+
+		f.NamespacedTest("contour-upgrade-test", func(namespace string) {
+			Specify("applications remain routable after the upgrade", func() {
+				By("deploying an app")
+				f.Fixtures.Echo.DeployN(namespace, "echo", 2)
+				p := &contour_v1.HTTPProxy{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Namespace: namespace,
+						Name:      "echo",
+					},
+					Spec: contour_v1.HTTPProxySpec{
+						VirtualHost: &contour_v1.VirtualHost{
+							Fqdn: appHost,
+						},
+						Routes: []contour_v1.Route{
+							{
+								Services: []contour_v1.Service{
+									{
+										Name: "echo",
+										Port: 80,
+										ResponseHeadersPolicy: &contour_v1.HeadersPolicy{
+											Set: []contour_v1.HeaderValue{
+												{
+													Name:  "X-Envoy-Response-Flags",
+													Value: "%RESPONSE_FLAGS%",
 												},
 											},
 										},
@@ -90,30 +112,199 @@ var _ = Describe("upgrading Contour", func() {
 							},
 						},
 					},
+				}
+				require.NoError(f.T(), f.Client.Create(context.TODO(), p))
+
+				By("ensuring it is routable")
+				checkRoutability(appHost)
+
+				poller, err := e2e.StartAppPoller(f.HTTP.HTTPURLBase, appHost, http.StatusOK, GinkgoWriter)
+				require.NoError(f.T(), err)
+
+				By("deploying updated contour resources")
+				require.NoError(f.T(), f.Deployment.EnsureResourcesForInclusterContour(true))
+
+				By("ensuring app is still routable")
+				checkRoutability(appHost)
+
+				poller.Stop()
+				totalRequests, successfulRequests := poller.Results()
+				f.T().Logf("Total requests: %d, successful requests: %d\n", totalRequests, successfulRequests)
+				require.Positive(f.T(), totalRequests)
+				successPercentage := 100 * float64(successfulRequests) / float64(totalRequests)
+				require.Greaterf(f.T(), successPercentage, float64(90.0), "success rate of %.2f%% less than 90%%", successPercentage)
+			})
+		})
+	})
+
+	_ = Describe("the Gateway provisioner", func() {
+		const gatewayClassName = "upgrade-gc"
+
+		BeforeEach(func() {
+			cmd := exec.Command("../../scripts/install-provisioner-release.sh", contourUpgradeFromVersion)
+			sess, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+			require.NoError(f.T(), err)
+			Eventually(sess, f.RetryTimeout, f.RetryInterval).Should(gexec.Exit(0))
+
+			require.True(f.T(), f.CreateGatewayClassAndWaitFor(&gatewayapi_v1.GatewayClass{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: gatewayClassName,
+				},
+				Spec: gatewayapi_v1.GatewayClassSpec{
+					ControllerName: gatewayapi_v1.GatewayController("projectcontour.io/gateway-controller"),
+				},
+			}, e2e.GatewayClassAccepted))
+		})
+
+		AfterEach(func() {
+			require.NoError(f.T(), f.Provisioner.DeleteResourcesForInclusterProvisioner())
+
+			gc := &gatewayapi_v1.GatewayClass{
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name: gatewayClassName,
 				},
 			}
-			require.NoError(f.T(), f.Client.Create(context.TODO(), i))
 
-			By("ensuring it is routable")
-			checkRoutability(appHost)
+			require.NoError(f.T(), f.Client.Delete(context.Background(), gc))
+		})
 
-			updateContourDeploymentResources()
+		f.NamespacedTest("provisioner-upgrade-test", func(namespace string) {
+			Specify("provisioner upgrade test", func() {
+				t := f.T()
 
-			By("waiting for contour deployment to be updated")
-			require.NoError(f.T(), f.Deployment.WaitForContourDeploymentUpdated())
+				appHost := "upgrade.provisioner.projectcontour.io"
 
-			By("waiting for envoy daemonset to be updated")
-			require.NoError(f.T(), f.Deployment.WaitForEnvoyDaemonSetUpdated())
+				gateway := &gatewayapi_v1.Gateway{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Namespace: namespace,
+						Name:      "upgrade-gateway",
+					},
+					Spec: gatewayapi_v1.GatewaySpec{
+						GatewayClassName: gatewayClassName,
+						Listeners: []gatewayapi_v1.Listener{
+							{
+								Name:     "http",
+								Port:     gatewayapi_v1.PortNumber(80),
+								Protocol: gatewayapi_v1.HTTPProtocolType,
+								Hostname: ptr.To(gatewayapi_v1.Hostname(appHost)),
+							},
+						},
+					},
+				}
 
-			By("ensuring app is still routable")
-			checkRoutability(appHost)
+				require.True(f.T(), f.CreateGatewayAndWaitFor(gateway, func(gw *gatewayapi_v1.Gateway) bool {
+					return e2e.GatewayProgrammed(gw) && e2e.GatewayHasAddress(gw)
+				}))
+
+				require.NoError(f.T(), f.Client.Get(context.Background(), k8s.NamespacedNameOf(gateway), gateway))
+
+				f.HTTP.HTTPURLBase = "http://" + gateway.Status.Addresses[0].Value
+
+				f.Fixtures.Echo.DeployN(namespace, "echo", 2)
+
+				require.True(f.T(), f.CreateHTTPRouteAndWaitFor(&gatewayapi_v1.HTTPRoute{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Namespace: namespace,
+						Name:      "echo",
+					},
+					Spec: gatewayapi_v1.HTTPRouteSpec{
+						CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+							ParentRefs: []gatewayapi_v1.ParentReference{
+								{Name: gatewayapi_v1.ObjectName(gateway.Name)},
+							},
+						},
+						Rules: []gatewayapi_v1.HTTPRouteRule{
+							{
+								BackendRefs: []gatewayapi_v1.HTTPBackendRef{
+									{
+										BackendRef: gatewayapi_v1.BackendRef{
+											BackendObjectReference: gatewayapi_v1.BackendObjectReference{
+												Name: gatewayapi_v1.ObjectName("echo"),
+												Port: ptr.To(gatewayapi_v1.PortNumber(80)),
+											},
+										},
+									},
+								},
+								Filters: []gatewayapi_v1.HTTPRouteFilter{
+									{
+										Type: gatewayapi_v1.HTTPRouteFilterResponseHeaderModifier,
+										ResponseHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
+											Set: []gatewayapi_v1.HTTPHeader{
+												{
+													Name:  gatewayapi_v1.HTTPHeaderName("X-Envoy-Response-Flags"),
+													Value: "%RESPONSE_FLAGS%",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}, e2e.HTTPRouteAccepted))
+
+				By("ensuring it is routable")
+				checkRoutability(appHost)
+
+				poller, err := e2e.StartAppPoller(f.HTTP.HTTPURLBase, appHost, http.StatusOK, GinkgoWriter)
+				require.NoError(f.T(), err)
+
+				By("updating gateway-api CRDs to latest")
+				// Delete existing BackendTLSPolicy CRD.
+				// TODO: remove this hack once BackendTLSPolicy v1alpha3 or
+				// above is available in multiple consecutive releases.
+				cmd := exec.Command("kubectl", "delete", "crd", "backendtlspolicies.gateway.networking.k8s.io")
+				sess, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+				require.NoError(f.T(), err)
+				Eventually(sess, f.RetryTimeout, f.RetryInterval).Should(gexec.Exit(0))
+
+				cmd = exec.Command("kubectl", "apply", "-f", "../../../examples/gateway/00-crds.yaml")
+				sess, err = gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
+				require.NoError(f.T(), err)
+				Eventually(sess, f.RetryTimeout, f.RetryInterval).Should(gexec.Exit(0))
+
+				By("deploying updated provisioner")
+				require.NoError(f.T(), f.Provisioner.EnsureResourcesForInclusterProvisioner())
+
+				By("waiting for Gateway's Contour deployment to upgrade")
+				deployment := &apps_v1.Deployment{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Namespace: namespace,
+						Name:      fmt.Sprintf("contour-%s", gateway.Name),
+					},
+				}
+				require.NoError(t, f.Client.Get(context.Background(), k8s.NamespacedNameOf(deployment), deployment))
+				require.NoError(t, e2e.WaitForContourDeploymentUpdated(deployment, f.Client, os.Getenv("CONTOUR_E2E_IMAGE")))
+
+				By("waiting for Gateway's Envoy daemonset to upgrade")
+				daemonset := &apps_v1.DaemonSet{
+					ObjectMeta: meta_v1.ObjectMeta{
+						Namespace: namespace,
+						Name:      fmt.Sprintf("envoy-%s", gateway.Name),
+					},
+				}
+				require.NoError(t, f.Client.Get(context.Background(), k8s.NamespacedNameOf(daemonset), daemonset))
+				require.NoError(t, e2e.WaitForEnvoyDaemonSetUpdated(daemonset, f.Client, os.Getenv("CONTOUR_E2E_IMAGE")))
+
+				By("ensuring app is still routable")
+				checkRoutability(appHost)
+
+				poller.Stop()
+				totalRequests, successfulRequests := poller.Results()
+				f.T().Logf("Total requests: %d, successful requests: %d\n", totalRequests, successfulRequests)
+				require.Positive(f.T(), totalRequests)
+				successPercentage := 100 * float64(successfulRequests) / float64(totalRequests)
+				// Success threshold is somewhat arbitrary but less than the standalone
+				// Contour upgrade threshold because the Gateway provisioner does not
+				// currently fully upgrade the control plane before the data plane which
+				// can lead to additional downtime when both are upgrading at the same
+				// time.
+				// ref. https://github.com/projectcontour/contour/issues/5375.
+				require.Greaterf(f.T(), successPercentage, float64(80.0), "success rate of %.2f%% less than 80%%", successPercentage)
+			})
 		})
 	})
 })
-
-func ingressPathTypePtr(t networking_v1.PathType) *networking_v1.PathType {
-	return &t
-}
 
 func checkRoutability(host string) {
 	res, ok := f.HTTP.RequestUntil(&e2e.HTTPRequestOpts{
@@ -123,71 +314,4 @@ func checkRoutability(host string) {
 	})
 	require.NotNil(f.T(), res, "request never succeeded")
 	require.Truef(f.T(), ok, "expected 200 response code, got %d", res.StatusCode)
-}
-
-func updateContourDeploymentResources() {
-	By("updating contour namespace")
-	require.NoError(f.T(), f.Deployment.EnsureNamespace())
-
-	By("updating contour service account")
-	require.NoError(f.T(), f.Deployment.EnsureContourServiceAccount())
-
-	By("updating envoy service account")
-	require.NoError(f.T(), f.Deployment.EnsureEnvoyServiceAccount())
-
-	By("updating contour config map")
-	require.NoError(f.T(), f.Deployment.EnsureContourConfigMap())
-
-	By("updating contour CRDs")
-	require.NoError(f.T(), f.Deployment.EnsureExtensionServiceCRD())
-	require.NoError(f.T(), f.Deployment.EnsureHTTPProxyCRD())
-	require.NoError(f.T(), f.Deployment.EnsureTLSCertDelegationCRD())
-
-	By("updating certgen service account")
-	require.NoError(f.T(), f.Deployment.EnsureCertgenServiceAccount())
-
-	By("updating contour role binding")
-	require.NoError(f.T(), f.Deployment.EnsureContourRoleBinding())
-
-	By("updating certgen role")
-	require.NoError(f.T(), f.Deployment.EnsureCertgenRole())
-
-	By("updating certgen job")
-	// Update container image.
-	require.Len(f.T(), f.Deployment.CertgenJob.Spec.Template.Spec.Containers, 1)
-	f.Deployment.CertgenJob.Spec.Template.Spec.Containers[0].Image = contourUpgradeToImage
-	f.Deployment.CertgenJob.Spec.Template.Spec.Containers[0].ImagePullPolicy = v1.PullIfNotPresent
-	require.NoError(f.T(), f.Deployment.EnsureCertgenJob())
-
-	By("updating contour cluster role binding")
-	require.NoError(f.T(), f.Deployment.EnsureContourClusterRoleBinding())
-
-	By("updating contour cluster role")
-	require.NoError(f.T(), f.Deployment.EnsureContourClusterRole())
-
-	By("updating contour service")
-	tempS := new(v1.Service)
-	require.NoError(f.T(), f.Client.Get(context.TODO(), client.ObjectKeyFromObject(f.Deployment.ContourService), tempS))
-	require.NoError(f.T(), f.Deployment.EnsureContourService())
-
-	By("updating envoy service")
-	require.NoError(f.T(), f.Client.Get(context.TODO(), client.ObjectKeyFromObject(f.Deployment.EnvoyService), tempS))
-	require.NoError(f.T(), f.Deployment.EnsureEnvoyService())
-
-	By("updating contour deployment")
-	// Update container image.
-	require.Len(f.T(), f.Deployment.ContourDeployment.Spec.Template.Spec.Containers, 1)
-	f.Deployment.ContourDeployment.Spec.Template.Spec.Containers[0].Image = contourUpgradeToImage
-	f.Deployment.ContourDeployment.Spec.Template.Spec.Containers[0].ImagePullPolicy = v1.PullIfNotPresent
-	require.NoError(f.T(), f.Deployment.EnsureContourDeployment())
-
-	By("updating envoy daemonset")
-	// Update container image.
-	require.Len(f.T(), f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.InitContainers, 1)
-	f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.InitContainers[0].Image = contourUpgradeToImage
-	f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.InitContainers[0].ImagePullPolicy = v1.PullIfNotPresent
-	require.Len(f.T(), f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.Containers, 2)
-	f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.Containers[0].Image = contourUpgradeToImage
-	f.Deployment.EnvoyDaemonSet.Spec.Template.Spec.Containers[0].ImagePullPolicy = v1.PullIfNotPresent
-	require.NoError(f.T(), f.Deployment.EnsureEnvoyDaemonSet())
 }

@@ -13,95 +13,68 @@
 
 package dag
 
-import "sort"
+import "github.com/projectcontour/contour/internal/gatewayapi"
+
+// nolint:revive
+const (
+	HTTP_LISTENER_NAME  = "ingress_http"
+	HTTPS_LISTENER_NAME = "ingress_https"
+)
 
 // ListenerProcessor adds an HTTP and an HTTPS listener to
-// the DAG if there are virtual hosts and secure virtual
-// hosts already defined as roots in the DAG.
-type ListenerProcessor struct{}
-
-// Run adds HTTP and HTTPS listeners to the DAG if there are
-// virtual hosts and secure virtual hosts already defined as
-// roots in the DAG.
-func (p *ListenerProcessor) Run(dag *DAG, _ *KubernetesCache) {
-	p.buildHTTPListener(dag)
-	p.buildHTTPSListener(dag)
+// the DAG.
+type ListenerProcessor struct {
+	HTTPAddress  string
+	HTTPPort     int
+	HTTPSAddress string
+	HTTPSPort    int
 }
 
-// buildHTTPListener builds a *dag.Listener for the vhosts bound to port 80.
-// The list of virtual hosts will attached to the listener will be sorted
-// by hostname.
-func (p *ListenerProcessor) buildHTTPListener(dag *DAG) {
-	var virtualhosts []Vertex
-	var remove []Vertex
+// Run adds HTTP and HTTPS listeners to the DAG.
+func (p *ListenerProcessor) Run(dag *DAG, cache *KubernetesCache) {
+	if cache.gateway != nil {
+		dag.HasDynamicListeners = true
 
-	for _, root := range dag.roots {
-		switch obj := root.(type) {
-		case *VirtualHost:
-			remove = append(remove, obj)
-
-			if obj.Valid() {
-				virtualhosts = append(virtualhosts, obj)
+		for _, port := range gatewayapi.ValidateListeners(cache.gateway.Spec.Listeners).Ports {
+			address := p.HTTPAddress
+			if port.Protocol == "https" {
+				address = p.HTTPSAddress
+			}
+			dag.Listeners[port.Name] = &Listener{
+				Name:             port.Name,
+				Protocol:         port.Protocol,
+				Address:          address,
+				Port:             int(port.ContainerPort),
+				EnableWebsockets: true,
+				vhostsByName:     map[string]*VirtualHost{},
+				svhostsByName:    map[string]*SecureVirtualHost{},
 			}
 		}
+	} else {
+		dag.Listeners[HTTP_LISTENER_NAME] = &Listener{
+			Name:            HTTP_LISTENER_NAME,
+			Protocol:        "http",
+			Address:         p.HTTPAddress,
+			Port:            intOrDefault(p.HTTPPort, 8080),
+			RouteConfigName: "ingress_http",
+			vhostsByName:    map[string]*VirtualHost{},
+		}
+
+		dag.Listeners[HTTPS_LISTENER_NAME] = &Listener{
+			Name:                        HTTPS_LISTENER_NAME,
+			Protocol:                    "https",
+			Address:                     p.HTTPSAddress,
+			Port:                        intOrDefault(p.HTTPSPort, 8443),
+			RouteConfigName:             "https",
+			FallbackCertRouteConfigName: "ingress_fallbackcert",
+			svhostsByName:               map[string]*SecureVirtualHost{},
+		}
 	}
-
-	// Update the DAG's roots to not include virtual hosts.
-	for _, r := range remove {
-		dag.RemoveRoot(r)
-	}
-
-	if len(virtualhosts) == 0 {
-		return
-	}
-
-	sort.SliceStable(virtualhosts, func(i, j int) bool {
-		return virtualhosts[i].(*VirtualHost).Name < virtualhosts[j].(*VirtualHost).Name
-	})
-
-	http := &Listener{
-		Port:         80,
-		VirtualHosts: virtualhosts,
-	}
-
-	dag.AddRoot(http)
 }
 
-// buildHTTPSListener builds a *dag.Listener for the vhosts bound to port 443.
-// The list of virtual hosts will attached to the listener will be sorted
-// by hostname.
-func (p *ListenerProcessor) buildHTTPSListener(dag *DAG) {
-	var virtualhosts []Vertex
-	var remove []Vertex
-
-	for _, root := range dag.roots {
-		switch obj := root.(type) {
-		case *SecureVirtualHost:
-			remove = append(remove, obj)
-
-			if obj.Valid() {
-				virtualhosts = append(virtualhosts, obj)
-			}
-		}
+func intOrDefault(i, def int) int {
+	if i > 0 {
+		return i
 	}
-
-	// Update the DAG's roots to not include secure virtual hosts.
-	for _, r := range remove {
-		dag.RemoveRoot(r)
-	}
-
-	if len(virtualhosts) == 0 {
-		return
-	}
-
-	sort.SliceStable(virtualhosts, func(i, j int) bool {
-		return virtualhosts[i].(*SecureVirtualHost).Name < virtualhosts[j].(*SecureVirtualHost).Name
-	})
-
-	https := &Listener{
-		Port:         443,
-		VirtualHosts: virtualhosts,
-	}
-
-	dag.AddRoot(https)
+	return def
 }

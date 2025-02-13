@@ -12,20 +12,20 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package httpproxy
 
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
-	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	"github.com/projectcontour/contour/test/e2e"
+	. "github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
+	"github.com/projectcontour/contour/test/e2e"
 )
 
 func testLocalRateLimitingVirtualHost(namespace string) {
@@ -34,18 +34,18 @@ func testLocalRateLimitingVirtualHost(namespace string) {
 
 		f.Fixtures.Echo.Deploy(namespace, "echo")
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "vhostlocalratelimit",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "vhostlocalratelimit.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo",
 								Port: 80,
@@ -55,7 +55,7 @@ func testLocalRateLimitingVirtualHost(namespace string) {
 				},
 			},
 		}
-		p, _ = f.CreateHTTPProxyAndWaitFor(p, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(p, e2e.HTTPProxyValid))
 
 		// Wait until we get a 200 from the proxy confirming
 		// the pods are up and serving traffic.
@@ -72,8 +72,8 @@ func testLocalRateLimitingVirtualHost(namespace string) {
 				return err
 			}
 
-			p.Spec.VirtualHost.RateLimitPolicy = &contourv1.RateLimitPolicy{
-				Local: &contourv1.LocalRateLimitPolicy{
+			p.Spec.VirtualHost.RateLimitPolicy = &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 1,
 					Unit:     "hour",
 				},
@@ -108,18 +108,18 @@ func testLocalRateLimitingRoute(namespace string) {
 
 		f.Fixtures.Echo.Deploy(namespace, "echo")
 
-		p := &contourv1.HTTPProxy{
-			ObjectMeta: metav1.ObjectMeta{
+		p := &contour_v1.HTTPProxy{
+			ObjectMeta: meta_v1.ObjectMeta{
 				Namespace: namespace,
 				Name:      "routelocalratelimit",
 			},
-			Spec: contourv1.HTTPProxySpec{
-				VirtualHost: &contourv1.VirtualHost{
+			Spec: contour_v1.HTTPProxySpec{
+				VirtualHost: &contour_v1.VirtualHost{
 					Fqdn: "routelocalratelimit.projectcontour.io",
 				},
-				Routes: []contourv1.Route{
+				Routes: []contour_v1.Route{
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo",
 								Port: 80,
@@ -127,13 +127,13 @@ func testLocalRateLimitingRoute(namespace string) {
 						},
 					},
 					{
-						Services: []contourv1.Service{
+						Services: []contour_v1.Service{
 							{
 								Name: "echo",
 								Port: 80,
 							},
 						},
-						Conditions: []contourv1.MatchCondition{
+						Conditions: []contour_v1.MatchCondition{
 							{
 								Prefix: "/unlimited",
 							},
@@ -142,7 +142,7 @@ func testLocalRateLimitingRoute(namespace string) {
 				},
 			},
 		}
-		p, _ = f.CreateHTTPProxyAndWaitFor(p, httpProxyValid)
+		require.True(f.T(), f.CreateHTTPProxyAndWaitFor(p, e2e.HTTPProxyValid))
 
 		// Wait until we get a 200 from the proxy confirming
 		// the pods are up and serving traffic.
@@ -159,8 +159,8 @@ func testLocalRateLimitingRoute(namespace string) {
 				return err
 			}
 
-			p.Spec.Routes[0].RateLimitPolicy = &contourv1.RateLimitPolicy{
-				Local: &contourv1.LocalRateLimitPolicy{
+			p.Spec.Routes[0].RateLimitPolicy = &contour_v1.RateLimitPolicy{
+				Local: &contour_v1.LocalRateLimitPolicy{
 					Requests: 1,
 					Unit:     "hour",
 				},

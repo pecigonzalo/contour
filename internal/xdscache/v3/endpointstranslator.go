@@ -18,61 +18,77 @@ import (
 	"sort"
 	"sync"
 
-	envoy_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	envoy_config_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/golang/protobuf/proto"
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
+	core_v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/cache"
+
 	"github.com/projectcontour/contour/internal/contour"
 	"github.com/projectcontour/contour/internal/dag"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/k8s"
 	"github.com/projectcontour/contour/internal/protobuf"
 	"github.com/projectcontour/contour/internal/sorter"
-	"github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/cache"
 )
 
-type LocalityEndpoints = envoy_endpoint_v3.LocalityLbEndpoints
-type LoadBalancingEndpoint = envoy_endpoint_v3.LbEndpoint
+type (
+	LocalityEndpoints     = envoy_config_endpoint_v3.LocalityLbEndpoints
+	LoadBalancingEndpoint = envoy_config_endpoint_v3.LbEndpoint
+)
 
 // RecalculateEndpoints generates a slice of LoadBalancingEndpoint
-// resources by matching the given service port to the given v1.Endpoints.
-// ep may be nil, in which case, the result is also nil.
-func RecalculateEndpoints(port v1.ServicePort, ep *v1.Endpoints) []*LoadBalancingEndpoint {
-	if ep == nil {
+// resources by matching the given service port to the given core_v1.Endpoints.
+// eps may be nil, in which case, the result is also nil.
+func RecalculateEndpoints(port, healthPort core_v1.ServicePort, eps *core_v1.Endpoints) []*LoadBalancingEndpoint {
+	if eps == nil {
 		return nil
 	}
 
 	var lb []*LoadBalancingEndpoint
-	for _, s := range ep.Subsets {
+	var healthCheckPort int32
+
+	for _, s := range eps.Subsets {
 		// Skip subsets without ready addresses.
 		if len(s.Addresses) < 1 {
 			continue
 		}
 
-		for _, p := range s.Ports {
-			if port.Protocol != p.Protocol && p.Protocol != v1.ProtocolTCP {
+		for _, endpointPort := range s.Ports {
+			if endpointPort.Protocol != core_v1.ProtocolTCP {
 				// NOTE: we only support "TCP", which is the default.
 				continue
+			}
+
+			// Set healthCheckPort only when port and healthPort are different.
+			if healthPort.Name != "" && healthPort.Name == endpointPort.Name && port.Name != healthPort.Name {
+				healthCheckPort = endpointPort.Port
 			}
 
 			// If the port isn't named, it must be the
 			// only Service port, so it's a match by
 			// definition. Otherwise, only take endpoint
 			// ports that match the service port name.
-			if port.Name != "" && port.Name != p.Name {
+			if port.Name != "" && port.Name != endpointPort.Name {
 				continue
 			}
 
 			// If we matched this port, collect Envoy endpoints for all the ready addresses.
-			addresses := append([]v1.EndpointAddress{}, s.Addresses...) // Shallow copy.
+			addresses := append([]core_v1.EndpointAddress{}, s.Addresses...) // Shallow copy.
 			sort.Slice(addresses, func(i, j int) bool { return addresses[i].IP < addresses[j].IP })
 
 			for _, a := range addresses {
-				addr := envoy_v3.SocketAddress(a.IP, int(p.Port))
+				addr := envoy_v3.SocketAddress(a.IP, int(endpointPort.Port))
 				lb = append(lb, envoy_v3.LBEndpoint(addr))
 			}
+		}
+	}
+
+	if healthCheckPort > 0 {
+		for _, lbEndpoint := range lb {
+			lbEndpoint.GetEndpoint().HealthCheckConfig = envoy_v3.HealthCheckConfig(healthCheckPort)
 		}
 	}
 
@@ -94,7 +110,7 @@ type EndpointsCache struct {
 	services map[types.NamespacedName][]*dag.ServiceCluster
 
 	// Cache of endpoints, indexed by name.
-	endpoints map[types.NamespacedName]*v1.Endpoints
+	endpoints map[types.NamespacedName]*core_v1.Endpoints
 }
 
 // Recalculate regenerates all the ClusterLoadAssignments from the
@@ -102,11 +118,11 @@ type EndpointsCache struct {
 // will be generated for every stale ServerCluster, however, if there
 // are no endpoints for the Services in the ServiceCluster, the
 // ClusterLoadAssignment will be empty.
-func (c *EndpointsCache) Recalculate() map[string]*envoy_endpoint_v3.ClusterLoadAssignment {
+func (c *EndpointsCache) Recalculate() map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	assignments := map[string]*envoy_endpoint_v3.ClusterLoadAssignment{}
+	assignments := map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment{}
 	for _, cluster := range c.stale {
 		// Clusters can be in the stale list multiple times;
 		// skip to avoid duplicate recalculations.
@@ -114,7 +130,7 @@ func (c *EndpointsCache) Recalculate() map[string]*envoy_endpoint_v3.ClusterLoad
 			continue
 		}
 
-		cla := envoy_endpoint_v3.ClusterLoadAssignment{
+		cla := envoy_config_endpoint_v3.ClusterLoadAssignment{
 			ClusterName: cluster.ClusterName,
 			Endpoints:   nil,
 			Policy:      nil,
@@ -124,7 +140,7 @@ func (c *EndpointsCache) Recalculate() map[string]*envoy_endpoint_v3.ClusterLoad
 		// attach them as a new LocalityEndpoints resource2.
 		for _, w := range cluster.Services {
 			n := types.NamespacedName{Namespace: w.ServiceNamespace, Name: w.ServiceName}
-			if lb := RecalculateEndpoints(w.ServicePort, c.endpoints[n]); lb != nil {
+			if lb := RecalculateEndpoints(w.ServicePort, w.HealthPort, c.endpoints[n]); lb != nil {
 				// Append the new set of endpoints. Users are allowed to set the load
 				// balancing weight to 0, which we reflect to Envoy as nil in order to
 				// assign no load to that locality.
@@ -186,16 +202,16 @@ func (c *EndpointsCache) SetClusters(clusters []*dag.ServiceCluster) error {
 	return nil
 }
 
-// UpdateEndpoint adds ep to the cache, or replaces it if it is
+// UpdateEndpoint adds eps to the cache, or replaces it if it is
 // already cached. Any ServiceClusters that are backed by a Service
-// that ep belongs become stale. Returns a boolean indicating whether
-// any ServiceClusters use ep or not.
-func (c *EndpointsCache) UpdateEndpoint(ep *v1.Endpoints) bool {
+// that eps belongs become stale. Returns a boolean indicating whether
+// any ServiceClusters use eps or not.
+func (c *EndpointsCache) UpdateEndpoint(eps *core_v1.Endpoints) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	name := k8s.NamespacedNameOf(ep)
-	c.endpoints[name] = ep.DeepCopy()
+	name := k8s.NamespacedNameOf(eps)
+	c.endpoints[name] = eps.DeepCopy()
 
 	// If any service clusters include this endpoint, mark them
 	// all as stale.
@@ -207,14 +223,14 @@ func (c *EndpointsCache) UpdateEndpoint(ep *v1.Endpoints) bool {
 	return false
 }
 
-// DeleteEndpoint deletes ep from the cache. Any ServiceClusters
-// that are backed by a Service that ep belongs become stale. Returns
-// a boolean indicating whether any ServiceClusters use ep or not.
-func (c *EndpointsCache) DeleteEndpoint(ep *v1.Endpoints) bool {
+// DeleteEndpoint deletes eps from the cache. Any ServiceClusters
+// that are backed by a Service that eps belongs become stale. Returns
+// a boolean indicating whether any ServiceClusters use eps or not.
+func (c *EndpointsCache) DeleteEndpoint(eps *core_v1.Endpoints) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	name := k8s.NamespacedNameOf(ep)
+	name := k8s.NamespacedNameOf(eps)
 	delete(c.endpoints, name)
 
 	// If any service clusters include this endpoint, mark them
@@ -230,13 +246,12 @@ func (c *EndpointsCache) DeleteEndpoint(ep *v1.Endpoints) bool {
 // NewEndpointsTranslator allocates a new endpoints translator.
 func NewEndpointsTranslator(log logrus.FieldLogger) *EndpointsTranslator {
 	return &EndpointsTranslator{
-		Cond:        contour.Cond{},
 		FieldLogger: log,
-		entries:     map[string]*envoy_endpoint_v3.ClusterLoadAssignment{},
+		entries:     map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment{},
 		cache: EndpointsCache{
 			stale:     nil,
 			services:  map[types.NamespacedName][]*dag.ServiceCluster{},
-			endpoints: map[types.NamespacedName]*v1.Endpoints{},
+			endpoints: map[types.NamespacedName]*core_v1.Endpoints{},
 		},
 	}
 }
@@ -247,19 +262,18 @@ type EndpointsTranslator struct {
 	// Observer notifies when the endpoints cache has been updated.
 	Observer contour.Observer
 
-	contour.Cond
 	logrus.FieldLogger
 
 	cache EndpointsCache
 
 	mu      sync.Mutex // Protects entries.
-	entries map[string]*envoy_endpoint_v3.ClusterLoadAssignment
+	entries map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment
 }
 
 // Merge combines the given entries with the existing entries in the
 // EndpointsTranslator. If the same key exists in both maps, an existing entry
 // is replaced.
-func (e *EndpointsTranslator) Merge(entries map[string]*envoy_endpoint_v3.ClusterLoadAssignment) {
+func (e *EndpointsTranslator) Merge(entries map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -269,29 +283,21 @@ func (e *EndpointsTranslator) Merge(entries map[string]*envoy_endpoint_v3.Cluste
 }
 
 // OnChange observes DAG rebuild events.
-func (e *EndpointsTranslator) OnChange(d *dag.DAG) {
+func (e *EndpointsTranslator) OnChange(root *dag.DAG) {
 	clusters := []*dag.ServiceCluster{}
 	names := map[string]bool{}
 
-	var visitor func(dag.Vertex)
-	visitor = func(vertex dag.Vertex) {
-		if svc, ok := vertex.(*dag.ServiceCluster); ok {
-			if err := svc.Validate(); err != nil {
-				e.WithError(err).Errorf("dropping invalid service cluster %q", svc.ClusterName)
-			} else if _, ok := names[svc.ClusterName]; ok {
-				e.Debugf("dropping service cluster with duplicate name %q", svc.ClusterName)
-			} else {
-				e.Debugf("added ServiceCluster %q from DAG", svc.ClusterName)
-				clusters = append(clusters, svc.DeepCopy())
-				names[svc.ClusterName] = true
-			}
+	for _, svc := range root.GetServiceClusters() {
+		if err := svc.Validate(); err != nil {
+			e.WithError(err).Errorf("dropping invalid service cluster %q", svc.ClusterName)
+		} else if _, ok := names[svc.ClusterName]; ok {
+			e.Debugf("dropping service cluster with duplicate name %q", svc.ClusterName)
+		} else {
+			e.Debugf("added ServiceCluster %q from DAG", svc.ClusterName)
+			clusters = append(clusters, svc.DeepCopy())
+			names[svc.ClusterName] = true
 		}
-
-		vertex.Visit(visitor)
 	}
-
-	// Collect all the service clusters from the DAG.
-	d.Visit(visitor)
 
 	// Update the cache with the new clusters.
 	if err := e.cache.SetClusters(clusters); err != nil {
@@ -317,7 +323,9 @@ func (e *EndpointsTranslator) OnChange(d *dag.DAG) {
 
 	if changed {
 		e.Debug("cluster load assignments changed, notifying waiters")
-		e.Notify()
+		if e.Observer != nil {
+			e.Observer.Refresh()
+		}
 	} else {
 		e.Debug("cluster load assignments did not change")
 	}
@@ -325,7 +333,7 @@ func (e *EndpointsTranslator) OnChange(d *dag.DAG) {
 
 // equal returns true if a and b are the same length, have the same set
 // of keys, and have proto-equivalent values for each key, or false otherwise.
-func equal(a, b map[string]*envoy_endpoint_v3.ClusterLoadAssignment) bool {
+func equal(a, b map[string]*envoy_config_endpoint_v3.ClusterLoadAssignment) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -343,16 +351,15 @@ func equal(a, b map[string]*envoy_endpoint_v3.ClusterLoadAssignment) bool {
 	return true
 }
 
-func (e *EndpointsTranslator) OnAdd(obj interface{}) {
+func (e *EndpointsTranslator) OnAdd(obj any, _ bool) {
 	switch obj := obj.(type) {
-	case *v1.Endpoints:
+	case *core_v1.Endpoints:
 		if !e.cache.UpdateEndpoint(obj) {
 			return
 		}
 
 		e.WithField("endpoint", k8s.NamespacedNameOf(obj)).Debug("Endpoint is in use by a ServiceCluster, recalculating ClusterLoadAssignments")
 		e.Merge(e.cache.Recalculate())
-		e.Notify()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
@@ -361,10 +368,10 @@ func (e *EndpointsTranslator) OnAdd(obj interface{}) {
 	}
 }
 
-func (e *EndpointsTranslator) OnUpdate(oldObj, newObj interface{}) {
+func (e *EndpointsTranslator) OnUpdate(oldObj, newObj any) {
 	switch newObj := newObj.(type) {
-	case *v1.Endpoints:
-		oldObj, ok := oldObj.(*v1.Endpoints)
+	case *core_v1.Endpoints:
+		oldObj, ok := oldObj.(*core_v1.Endpoints)
 		if !ok {
 			e.Errorf("OnUpdate endpoints %#v received invalid oldObj %T; %#v", newObj, oldObj, oldObj)
 			return
@@ -389,7 +396,6 @@ func (e *EndpointsTranslator) OnUpdate(oldObj, newObj interface{}) {
 
 		e.WithField("endpoint", k8s.NamespacedNameOf(newObj)).Debug("Endpoint is in use by a ServiceCluster, recalculating ClusterLoadAssignments")
 		e.Merge(e.cache.Recalculate())
-		e.Notify()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
@@ -398,16 +404,15 @@ func (e *EndpointsTranslator) OnUpdate(oldObj, newObj interface{}) {
 	}
 }
 
-func (e *EndpointsTranslator) OnDelete(obj interface{}) {
+func (e *EndpointsTranslator) OnDelete(obj any) {
 	switch obj := obj.(type) {
-	case *v1.Endpoints:
+	case *core_v1.Endpoints:
 		if !e.cache.DeleteEndpoint(obj) {
 			return
 		}
 
 		e.WithField("endpoint", k8s.NamespacedNameOf(obj)).Debug("Endpoint was in use by a ServiceCluster, recalculating ClusterLoadAssignments")
 		e.Merge(e.cache.Recalculate())
-		e.Notify()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
@@ -423,7 +428,7 @@ func (e *EndpointsTranslator) Contents() []proto.Message {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	values := make([]*envoy_endpoint_v3.ClusterLoadAssignment, 0, len(e.entries))
+	values := make([]*envoy_config_endpoint_v3.ClusterLoadAssignment, 0, len(e.entries))
 	for _, v := range e.entries {
 		values = append(values, v)
 	}
@@ -432,24 +437,6 @@ func (e *EndpointsTranslator) Contents() []proto.Message {
 	return protobuf.AsMessages(values)
 }
 
-func (e *EndpointsTranslator) Query(names []string) []proto.Message {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	values := make([]*envoy_endpoint_v3.ClusterLoadAssignment, 0, len(names))
-	for _, n := range names {
-		v, ok := e.entries[n]
-		if !ok {
-			e.Debugf("no cache entry for %q", n)
-			v = &envoy_endpoint_v3.ClusterLoadAssignment{
-				ClusterName: n,
-			}
-		}
-		values = append(values, v)
-	}
-
-	sort.Stable(sorter.For(values))
-	return protobuf.AsMessages(values)
-}
-
 func (*EndpointsTranslator) TypeURL() string { return resource.EndpointType }
+
+func (e *EndpointsTranslator) SetObserver(observer contour.Observer) { e.Observer = observer }

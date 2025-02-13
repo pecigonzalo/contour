@@ -14,40 +14,34 @@
 package v3
 
 import (
-	"path"
 	"sort"
 	"sync"
 
-	"github.com/sirupsen/logrus"
-
-	envoy_accesslog_v3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
-	envoy_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
-	envoy_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	envoy_config_accesslog_v3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
+	envoy_config_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_filter_network_http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_transport_socket_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/golang/protobuf/proto"
-	contour_api_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
-	"github.com/projectcontour/contour/internal/contour"
+	"google.golang.org/protobuf/proto"
+	"k8s.io/apimachinery/pkg/types"
+
+	contour_v1alpha1 "github.com/projectcontour/contour/apis/projectcontour/v1alpha1"
+	"github.com/projectcontour/contour/internal/contourconfig"
 	"github.com/projectcontour/contour/internal/dag"
 	envoy_v3 "github.com/projectcontour/contour/internal/envoy/v3"
 	"github.com/projectcontour/contour/internal/protobuf"
 	"github.com/projectcontour/contour/internal/sorter"
 	"github.com/projectcontour/contour/internal/timeout"
 	"github.com/projectcontour/contour/pkg/config"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // nolint:revive
 const (
-	ENVOY_HTTP_LISTENER            = "ingress_http"
-	ENVOY_FALLBACK_ROUTECONFIG     = "ingress_fallbackcert"
-	ENVOY_HTTPS_LISTENER           = "ingress_https"
-	DEFAULT_HTTP_ACCESS_LOG        = "/dev/stdout"
-	DEFAULT_HTTP_LISTENER_ADDRESS  = "0.0.0.0"
-	DEFAULT_HTTP_LISTENER_PORT     = 8080
-	DEFAULT_HTTPS_ACCESS_LOG       = "/dev/stdout"
-	DEFAULT_HTTPS_LISTENER_ADDRESS = DEFAULT_HTTP_LISTENER_ADDRESS
-	DEFAULT_HTTPS_LISTENER_PORT    = 8443
+	ENVOY_HTTP_LISTENER        = "ingress_http"
+	ENVOY_HTTPS_LISTENER       = "ingress_https"
+	ENVOY_FALLBACK_ROUTECONFIG = "ingress_fallbackcert"
+	DEFAULT_HTTP_ACCESS_LOG    = "/dev/stdout"
+	DEFAULT_HTTPS_ACCESS_LOG   = "/dev/stdout"
 )
 
 type Listener struct {
@@ -58,20 +52,9 @@ type Listener struct {
 
 // ListenerConfig holds configuration parameters for building Envoy Listeners.
 type ListenerConfig struct {
-
-	// Envoy's HTTP (non TLS) listener addresses.
-	// If not set, defaults to a single listener with
-	// DEFAULT_HTTP_LISTENER_ADDRESS:DEFAULT_HTTP_LISTENER_PORT.
-	HTTPListeners map[string]Listener
-
 	// Envoy's HTTP (non TLS) access log path.
 	// If not set, defaults to DEFAULT_HTTP_ACCESS_LOG.
 	HTTPAccessLog string
-
-	// Envoy's HTTPS (TLS) listener addresses.
-	// If not set, defaults to a single listener with
-	// DEFAULT_HTTPS_LISTENER_ADDRESS:DEFAULT_HTTPS_LISTENER_PORT.
-	HTTPSListeners map[string]Listener
 
 	// Envoy's HTTPS (TLS) access log path.
 	// If not set, defaults to DEFAULT_HTTPS_ACCESS_LOG.
@@ -84,6 +67,9 @@ type ListenerConfig struct {
 
 	// MinimumTLSVersion defines the minimum TLS protocol version the proxy should accept.
 	MinimumTLSVersion string
+
+	// MaximumTLSVersion defines the maximum TLS protocol version the proxy should accept.
+	MaximumTLSVersion string
 
 	// CipherSuites defines the ciphers Envoy TLS listeners will accept when
 	// negotiating TLS 1.2.
@@ -99,12 +85,12 @@ type ListenerConfig struct {
 	// AccessLogType defines if Envoy logs should be output as Envoy's default or JSON.
 	// Valid values: 'envoy', 'json'
 	// If not set, defaults to 'envoy'
-	AccessLogType contour_api_v1alpha1.AccessLogType
+	AccessLogType contour_v1alpha1.AccessLogType
 
-	// AccessLogFields sets the fields that should be shown in JSON logs.
+	// AccessLogJSONFields sets the fields that should be shown in JSON logs.
 	// Valid entries are the keys from internal/envoy/accesslog.go:jsonheaders
 	// Defaults to a particular set of fields.
-	AccessLogFields contour_api_v1alpha1.AccessLogFields
+	AccessLogJSONFields contour_v1alpha1.AccessLogJSONFields
 
 	// AccessLogFormatString sets the format string to be used for text based access logs.
 	// Defaults to empty to defer to Envoy's default log format.
@@ -113,220 +99,109 @@ type ListenerConfig struct {
 	// AccessLogFormatterExtensions defines the Envoy extensions to enable for access log.
 	AccessLogFormatterExtensions []string
 
-	// RequestTimeout configures the request_timeout for all Connection Managers.
-	RequestTimeout timeout.Setting
+	// AccessLogLevel defines the logging level for access log.
+	AccessLogLevel contour_v1alpha1.AccessLogLevel
 
-	// ConnectionIdleTimeout configures the common_http_protocol_options.idle_timeout for all
-	// Connection Managers.
-	ConnectionIdleTimeout timeout.Setting
-
-	// StreamIdleTimeout configures the stream_idle_timeout for all Connection Managers.
-	StreamIdleTimeout timeout.Setting
-
-	// DelayedCloseTimeout configures the delayed_close_timeout for all Connection Managers.
-	DelayedCloseTimeout timeout.Setting
-
-	// MaxConnectionDuration configures the common_http_protocol_options.max_connection_duration for all
-	// Connection Managers.
-	MaxConnectionDuration timeout.Setting
-
-	// ConnectionShutdownGracePeriod configures the drain_timeout for all Connection Managers.
-	ConnectionShutdownGracePeriod timeout.Setting
+	// Timeouts holds Listener timeout settings.
+	Timeouts contourconfig.Timeouts
 
 	// AllowChunkedLength enables setting allow_chunked_length on the HTTP1 options for all
 	// listeners.
 	AllowChunkedLength bool
 
+	// MergeSlashes toggles Envoy's non-standard merge_slashes path transformation option for all listeners.
+	MergeSlashes bool
+
+	// ServerHeaderTransformation defines the action to be applied to the Server header on the response path.
+	ServerHeaderTransformation contour_v1alpha1.ServerHeaderTransformationType
+
 	// XffNumTrustedHops sets the number of additional ingress proxy hops from the
 	// right side of the x-forwarded-for HTTP header to trust.
 	XffNumTrustedHops uint32
+
+	// StripTrailingHostDot sets  if trailing dot of the host should be removed from host/authority header before any
+	// processing of request by HTTP filters or routing.
+	StripTrailingHostDot bool
 
 	// ConnectionBalancer
 	// The validated value is 'exact'.
 	// If no configuration is specified, Envoy will not attempt to balance active connections between worker threads
 	// If specified, the listener will use the exact connection balancer.
 	ConnectionBalancer string
+
+	// MaxRequestsPerConnection defines the max number of requests per connection before which the connection is closed.
+	// if not specified there is no limit set.
+	MaxRequestsPerConnection *uint32
+
+	HTTP2MaxConcurrentStreams *uint32
+
+	// PerConnectionBufferLimitBytes defines the soft limit on size of the listener’s new connection read and write buffers
+	// If unspecified, an implementation defined default is applied (1MiB).
+	PerConnectionBufferLimitBytes *uint32
+
 	// RateLimitConfig optionally configures the global Rate Limit Service to be
 	// used.
 	RateLimitConfig *RateLimitConfig
+
+	// GlobalExternalAuthConfig optionally configures the global external authorization Service to be
+	// used.
+	GlobalExternalAuthConfig *GlobalExternalAuthConfig
+
+	// TracingConfig optionally configures the tracing collector Service to be
+	// used.
+	TracingConfig *TracingConfig
+
+	// SocketOptions configures socket options HTTP and HTTPS listeners.
+	SocketOptions *contour_v1alpha1.SocketOptions
+}
+
+type ExtensionServiceConfig struct {
+	ExtensionService types.NamespacedName
+	Timeout          timeout.Setting
+	SNI              string
+}
+
+type TracingConfig struct {
+	ExtensionServiceConfig
+
+	ServiceName string
+
+	OverallSampling float64
+
+	MaxPathTagLength uint32
+
+	CustomTags []*CustomTag
+}
+
+type CustomTag struct {
+	// TagName is the unique name of the custom tag.
+	TagName string
+
+	// Literal is a static custom tag value.
+	Literal string
+
+	// EnvironmentName indicates that the label value is obtained
+	// from the environment variable.
+	EnvironmentName string
+
+	// RequestHeaderName indicates which request header
+	// the label value is obtained from.
+	RequestHeaderName string
 }
 
 type RateLimitConfig struct {
-	ExtensionService        types.NamespacedName
-	Domain                  string
-	Timeout                 timeout.Setting
-	FailOpen                bool
-	EnableXRateLimitHeaders bool
+	ExtensionServiceConfig
+	Domain                      string
+	FailOpen                    bool
+	EnableXRateLimitHeaders     bool
+	EnableResourceExhaustedCode bool
 }
 
-func NewListenerConfig(
-	useProxyProto bool,
-	httpListener contour_api_v1alpha1.EnvoyListener,
-	httpsListener contour_api_v1alpha1.EnvoyListener,
-	accessLogType contour_api_v1alpha1.AccessLogType,
-	accessLogFields contour_api_v1alpha1.AccessLogFields,
-	accessLogFormatString *string,
-	accessLogFormatterExtensions []string,
-	minimumTLSVersion string,
-	cipherSuites []string,
-	timeoutParameters *contour_api_v1alpha1.TimeoutParameters,
-	defaultHTTPVersions []envoy_v3.HTTPVersionType,
-	allowChunkedLength bool,
-	xffNumTrustedHops uint32,
-	connectionBalancer string,
-	log logrus.FieldLogger) ListenerConfig {
-
-	// connection balancer
-	if ok := connectionBalancer == "exact" || connectionBalancer == ""; !ok {
-		log.Warnf("Invalid listener connection balancer value %q. Only 'exact' connection balancing is supported for now.", connectionBalancer)
-		connectionBalancer = ""
-	}
-
-	var connectionIdleTimeoutSetting timeout.Setting
-	var streamIdleTimeoutSetting timeout.Setting
-	var delayedCloseTimeoutSetting timeout.Setting
-	var maxConnectionDurationSetting timeout.Setting
-	var connectionShutdownGracePeriodSetting timeout.Setting
-	var requestTimeoutSetting timeout.Setting
-	var err error
-
-	if timeoutParameters != nil {
-		if timeoutParameters.ConnectionIdleTimeout != nil {
-			connectionIdleTimeoutSetting, err = timeout.Parse(*timeoutParameters.ConnectionIdleTimeout)
-			if err != nil {
-				log.Errorf("error parsing connection idle timeout: %w", err)
-			}
-		}
-		if timeoutParameters.StreamIdleTimeout != nil {
-			streamIdleTimeoutSetting, err = timeout.Parse(*timeoutParameters.StreamIdleTimeout)
-			if err != nil {
-				log.Errorf("error parsing stream idle timeout: %w", err)
-			}
-		}
-		if timeoutParameters.DelayedCloseTimeout != nil {
-			delayedCloseTimeoutSetting, err = timeout.Parse(*timeoutParameters.DelayedCloseTimeout)
-			if err != nil {
-				log.Errorf("error parsing delayed close timeout: %w", err)
-			}
-		}
-		if timeoutParameters.MaxConnectionDuration != nil {
-			maxConnectionDurationSetting, _ = timeout.Parse(*timeoutParameters.MaxConnectionDuration)
-			if err != nil {
-				log.Errorf("error parsing max connection duration: %w", err)
-			}
-		}
-		if timeoutParameters.ConnectionShutdownGracePeriod != nil {
-			connectionShutdownGracePeriodSetting, _ = timeout.Parse(*timeoutParameters.ConnectionShutdownGracePeriod)
-			if err != nil {
-				log.Errorf("error parsing connection shutdown grace period: %w", err)
-			}
-		}
-		if timeoutParameters.RequestTimeout != nil {
-			requestTimeoutSetting, _ = timeout.Parse(*timeoutParameters.RequestTimeout)
-			if err != nil {
-				log.Errorf("error parsing request timeout: %w", err)
-			}
-		}
-	}
-
-	accessLogFormatStringConverted := ""
-	if accessLogFormatString != nil {
-		accessLogFormatStringConverted = *accessLogFormatString
-	}
-
-	lc := ListenerConfig{
-		UseProxyProto: useProxyProto,
-		HTTPListeners: map[string]Listener{
-			"ingress_http": {
-				Name:    "ingress_http",
-				Address: httpListener.Address,
-				Port:    httpListener.Port,
-			},
-		},
-		HTTPSListeners: map[string]Listener{
-			"ingress_https": {
-				Name:    "ingress_https",
-				Address: httpsListener.Address,
-				Port:    httpsListener.Port,
-			},
-		},
-		HTTPAccessLog:                 httpListener.AccessLog,
-		HTTPSAccessLog:                httpsListener.AccessLog,
-		AccessLogType:                 accessLogType,
-		AccessLogFields:               accessLogFields,
-		AccessLogFormatString:         accessLogFormatStringConverted,
-		AccessLogFormatterExtensions:  accessLogFormatterExtensions,
-		MinimumTLSVersion:             minimumTLSVersion,
-		CipherSuites:                  cipherSuites,
-		RequestTimeout:                requestTimeoutSetting,
-		ConnectionIdleTimeout:         connectionIdleTimeoutSetting,
-		StreamIdleTimeout:             streamIdleTimeoutSetting,
-		DelayedCloseTimeout:           delayedCloseTimeoutSetting,
-		MaxConnectionDuration:         maxConnectionDurationSetting,
-		ConnectionShutdownGracePeriod: connectionShutdownGracePeriodSetting,
-		DefaultHTTPVersions:           defaultHTTPVersions,
-		AllowChunkedLength:            !allowChunkedLength,
-		XffNumTrustedHops:             xffNumTrustedHops,
-		ConnectionBalancer:            connectionBalancer,
-	}
-	return lc
-}
-
-// DefaultListeners returns the configured Listeners or a single
-// Insecure (http) & single Secure (https) default listeners
-// if not provided.
-func (lvc *ListenerConfig) DefaultListeners() *ListenerConfig {
-
-	httpListeners := lvc.HTTPListeners
-	httpsListeners := lvc.HTTPSListeners
-
-	if len(lvc.HTTPListeners) == 0 {
-		httpListeners = map[string]Listener{
-			ENVOY_HTTP_LISTENER: {
-				Name:    ENVOY_HTTP_LISTENER,
-				Address: DEFAULT_HTTP_LISTENER_ADDRESS,
-				Port:    DEFAULT_HTTP_LISTENER_PORT,
-			},
-		}
-	}
-
-	if len(lvc.HTTPSListeners) == 0 {
-		httpsListeners = map[string]Listener{
-			ENVOY_HTTPS_LISTENER: {
-				Name:    ENVOY_HTTPS_LISTENER,
-				Address: DEFAULT_HTTPS_LISTENER_ADDRESS,
-				Port:    DEFAULT_HTTPS_LISTENER_PORT,
-			},
-		}
-	}
-
-	lvc.HTTPListeners = httpListeners
-	lvc.HTTPSListeners = httpsListeners
-	return lvc
-}
-
-func (lvc *ListenerConfig) SecureListeners() map[string]*envoy_listener_v3.Listener {
-	listeners := make(map[string]*envoy_listener_v3.Listener)
-
-	if len(lvc.HTTPSListeners) == 0 {
-		listeners[ENVOY_HTTPS_LISTENER] = envoy_v3.Listener(
-			ENVOY_HTTPS_LISTENER,
-			DEFAULT_HTTPS_LISTENER_ADDRESS,
-			DEFAULT_HTTPS_LISTENER_PORT,
-			secureProxyProtocol(lvc.UseProxyProto),
-		)
-	}
-
-	for name, l := range lvc.HTTPSListeners {
-		listeners[name] = envoy_v3.Listener(
-			l.Name,
-			l.Address,
-			l.Port,
-			secureProxyProtocol(lvc.UseProxyProto),
-		)
-	}
-
-	return listeners
+type GlobalExternalAuthConfig struct {
+	ExtensionServiceConfig
+	FailOpen        bool
+	Context         map[string]string
+	WithRequestBody *dag.AuthorizationServerBufferSettings
 }
 
 // httpAccessLog returns the access log for the HTTP (non TLS)
@@ -358,66 +233,83 @@ func (lvc *ListenerConfig) accesslogType() string {
 
 // accesslogFields returns the access log fields that should be configured
 // for Envoy, or a default set if not configured.
-func (lvc *ListenerConfig) accesslogFields() contour_api_v1alpha1.AccessLogFields {
-	if lvc.AccessLogFields != nil {
-		return lvc.AccessLogFields
+func (lvc *ListenerConfig) accesslogFields() contour_v1alpha1.AccessLogJSONFields {
+	if lvc.AccessLogJSONFields != nil {
+		return lvc.AccessLogJSONFields
 	}
-	return contour_api_v1alpha1.DefaultFields
+	return contour_v1alpha1.DefaultAccessLogJSONFields
 }
 
-func (lvc *ListenerConfig) newInsecureAccessLog() []*envoy_accesslog_v3.AccessLog {
+func (lvc *ListenerConfig) newInsecureAccessLog() []*envoy_config_accesslog_v3.AccessLog {
 	switch lvc.accesslogType() {
 	case string(config.JSONAccessLog):
-		return envoy_v3.FileAccessLogJSON(lvc.httpAccessLog(), lvc.accesslogFields(), lvc.AccessLogFormatterExtensions)
+		return envoy_v3.FileAccessLogJSON(lvc.httpAccessLog(), lvc.accesslogFields(), lvc.AccessLogFormatterExtensions, lvc.AccessLogLevel)
 	default:
-		return envoy_v3.FileAccessLogEnvoy(lvc.httpAccessLog(), lvc.AccessLogFormatString, lvc.AccessLogFormatterExtensions)
+		return envoy_v3.FileAccessLogEnvoy(lvc.httpAccessLog(), lvc.AccessLogFormatString, lvc.AccessLogFormatterExtensions, lvc.AccessLogLevel)
 	}
 }
 
-func (lvc *ListenerConfig) newSecureAccessLog() []*envoy_accesslog_v3.AccessLog {
+func (lvc *ListenerConfig) newSecureAccessLog() []*envoy_config_accesslog_v3.AccessLog {
 	switch lvc.accesslogType() {
 	case "json":
-		return envoy_v3.FileAccessLogJSON(lvc.httpsAccessLog(), lvc.accesslogFields(), lvc.AccessLogFormatterExtensions)
+		return envoy_v3.FileAccessLogJSON(lvc.httpsAccessLog(), lvc.accesslogFields(), lvc.AccessLogFormatterExtensions, lvc.AccessLogLevel)
 	default:
-		return envoy_v3.FileAccessLogEnvoy(lvc.httpsAccessLog(), lvc.AccessLogFormatString, lvc.AccessLogFormatterExtensions)
+		return envoy_v3.FileAccessLogEnvoy(lvc.httpsAccessLog(), lvc.AccessLogFormatString, lvc.AccessLogFormatterExtensions, lvc.AccessLogLevel)
 	}
 }
 
 // minTLSVersion returns the requested minimum TLS protocol
-// version or envoy_tls_v3.TlsParameters_TLSv1_2 if not configured.
-func (lvc *ListenerConfig) minTLSVersion() envoy_tls_v3.TlsParameters_TlsProtocol {
-	minTLSVersion := envoy_v3.ParseTLSVersion(lvc.MinimumTLSVersion)
-	if minTLSVersion > envoy_tls_v3.TlsParameters_TLSv1_2 {
-		return minTLSVersion
+// version or envoy_transport_socket_tls_v3.TlsParameters_TLSv1_2 if not configured.
+func (lvc *ListenerConfig) minTLSVersion() envoy_transport_socket_tls_v3.TlsParameters_TlsProtocol {
+	ver := envoy_v3.ParseTLSVersion(lvc.MinimumTLSVersion)
+	if ver > envoy_transport_socket_tls_v3.TlsParameters_TLSv1_2 {
+		return ver
 	}
-	return envoy_tls_v3.TlsParameters_TLSv1_2
+	return envoy_transport_socket_tls_v3.TlsParameters_TLSv1_2
+}
+
+// maxTLSVersion returns the requested maximum TLS protocol
+// version or envoy_transport_socket_tls_v3.TlsParameters_TLSv1_3 if not configured.
+func (lvc *ListenerConfig) maxTLSVersion() envoy_transport_socket_tls_v3.TlsParameters_TlsProtocol {
+	ver := envoy_v3.ParseTLSVersion(lvc.MaximumTLSVersion)
+	if ver >= envoy_transport_socket_tls_v3.TlsParameters_TLSv1_2 {
+		return ver
+	}
+	return envoy_transport_socket_tls_v3.TlsParameters_TLSv1_3
 }
 
 // ListenerCache manages the contents of the gRPC LDS cache.
 type ListenerCache struct {
 	mu           sync.Mutex
-	values       map[string]*envoy_listener_v3.Listener
-	staticValues map[string]*envoy_listener_v3.Listener
+	values       map[string]*envoy_config_listener_v3.Listener
+	staticValues map[string]*envoy_config_listener_v3.Listener
 
-	Config ListenerConfig
-	contour.Cond
+	envoyGen *envoy_v3.EnvoyGen
+	Config   ListenerConfig
 }
 
 // NewListenerCache returns an instance of a ListenerCache
-func NewListenerCache(config ListenerConfig, statsAddr string, statsPort, adminPort int) *ListenerCache {
-	stats := envoy_v3.StatsListener(statsAddr, statsPort)
-	admin := envoy_v3.AdminListener("127.0.0.1", adminPort)
-
+func NewListenerCache(
+	listenerConfig ListenerConfig,
+	metricsConfig contour_v1alpha1.MetricsConfig,
+	healthConfig contour_v1alpha1.HealthConfig,
+	adminPort int,
+	envoyGen *envoy_v3.EnvoyGen,
+) *ListenerCache {
 	listenerCache := &ListenerCache{
-		Config: config,
-		staticValues: map[string]*envoy_listener_v3.Listener{
-			stats.Name: stats,
-		},
+		Config:       listenerConfig,
+		staticValues: map[string]*envoy_config_listener_v3.Listener{},
+		envoyGen:     envoyGen,
+	}
+
+	for _, l := range envoyGen.StatsListeners(metricsConfig, healthConfig) {
+		listenerCache.staticValues[l.Name] = l
 	}
 
 	// If the port is not zero, allow the read-only options from the
 	// Envoy admin webpage to be served.
 	if adminPort > 0 {
+		admin := envoy_v3.AdminListener(adminPort)
 		listenerCache.staticValues[admin.Name] = admin
 	}
 
@@ -425,19 +317,18 @@ func NewListenerCache(config ListenerConfig, statsAddr string, statsPort, adminP
 }
 
 // Update replaces the contents of the cache with the supplied map.
-func (c *ListenerCache) Update(v map[string]*envoy_listener_v3.Listener) {
+func (c *ListenerCache) Update(v map[string]*envoy_config_listener_v3.Listener) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.values = v
-	c.Cond.Notify()
 }
 
 // Contents returns a copy of the cache's contents.
 func (c *ListenerCache) Contents() []proto.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var values []*envoy_listener_v3.Listener
+	var values []*envoy_config_listener_v3.Listener
 	for _, v := range c.values {
 		values = append(values, v)
 	}
@@ -448,106 +339,268 @@ func (c *ListenerCache) Contents() []proto.Message {
 	return protobuf.AsMessages(values)
 }
 
-// Query returns the proto.Messages in the ListenerCache that match
-// a slice of strings
-func (c *ListenerCache) Query(names []string) []proto.Message {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var values []*envoy_listener_v3.Listener
-	for _, n := range names {
-		v, ok := c.values[n]
-		if !ok {
-			v, ok = c.staticValues[n]
-			if !ok {
-				// if the listener is not registered in
-				// dynamic or static values then skip it
-				// as there is no way to return a blank
-				// listener because the listener address
-				// field is required.
-				continue
-			}
-		}
-		values = append(values, v)
-	}
-	sort.Stable(sorter.For(values))
-	return protobuf.AsMessages(values)
-}
-
 func (*ListenerCache) TypeURL() string { return resource.ListenerType }
 
 func (c *ListenerCache) OnChange(root *dag.DAG) {
-	listeners := visitListeners(root, &c.Config)
-	c.Update(listeners)
-}
+	cfg := c.Config
+	listeners := map[string]*envoy_config_listener_v3.Listener{}
 
-type listenerVisitor struct {
-	*ListenerConfig
-
-	listeners        map[string]*envoy_listener_v3.Listener
-	httpListenerName string // Name of dag.VirtualHost encountered.
-}
-
-func visitListeners(root dag.Vertex, lvc *ListenerConfig) map[string]*envoy_listener_v3.Listener {
-	lv := listenerVisitor{
-		ListenerConfig: lvc.DefaultListeners(),
-		listeners:      lvc.SecureListeners(),
+	socketOptions := envoy_v3.NewSocketOptions().TCPKeepalive()
+	if cfg.SocketOptions != nil {
+		socketOptions = socketOptions.TOS(cfg.SocketOptions.TOS).TrafficClass(cfg.SocketOptions.TrafficClass)
 	}
 
-	lv.visit(root)
+	for _, listener := range root.Listeners {
+		// A Listener-level TCPProxy proxies all traffic for
+		// the Listener port, i.e. no filter chain match.
+		if listener.TCPProxy != nil {
+			listeners[listener.Name] = envoy_v3.Listener(
+				listener.Name,
+				listener.Address,
+				listener.Port,
+				cfg.PerConnectionBufferLimitBytes,
+				socketOptions,
+				nil,
+				envoy_v3.TCPProxy(listener.Name, listener.TCPProxy, cfg.newInsecureAccessLog()),
+			)
 
-	if httpListener, ok := lvc.HTTPListeners[lv.httpListenerName]; ok {
+			continue
+		}
+		// If there are non-TLS vhosts bound to the listener,
+		// add a listener with a single filter chain.
+		// Note: Ensure the filter chain order matches with the filter chain
+		// order for the HTTPS virtualhosts.
+		if len(listener.VirtualHosts) > 0 {
+			cm := c.envoyGen.HTTPConnectionManagerBuilder().
+				Codec(envoy_v3.CodecForVersions(cfg.DefaultHTTPVersions...)).
+				DefaultFilters().
+				RouteConfigName(httpRouteConfigName(listener)).
+				MetricsPrefix(listener.Name).
+				AccessLoggers(cfg.newInsecureAccessLog()).
+				RequestTimeout(cfg.Timeouts.Request).
+				ConnectionIdleTimeout(cfg.Timeouts.ConnectionIdle).
+				StreamIdleTimeout(cfg.Timeouts.StreamIdle).
+				DelayedCloseTimeout(cfg.Timeouts.DelayedClose).
+				MaxConnectionDuration(cfg.Timeouts.MaxConnectionDuration).
+				ConnectionShutdownGracePeriod(cfg.Timeouts.ConnectionShutdownGracePeriod).
+				AllowChunkedLength(cfg.AllowChunkedLength).
+				MergeSlashes(cfg.MergeSlashes).
+				ServerHeaderTransformation(cfg.ServerHeaderTransformation).
+				NumTrustedHops(cfg.XffNumTrustedHops).
+				StripTrailingHostDot(cfg.StripTrailingHostDot).
+				MaxRequestsPerConnection(cfg.MaxRequestsPerConnection).
+				HTTP2MaxConcurrentStreams(cfg.HTTP2MaxConcurrentStreams).
+				AddFilter(httpGlobalExternalAuthConfig(cfg.GlobalExternalAuthConfig)).
+				Tracing(envoy_v3.TracingConfig(envoyTracingConfig(cfg.TracingConfig))).
+				AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(cfg.RateLimitConfig))).
+				EnableWebsockets(listener.EnableWebsockets).
+				Get()
 
-		// Add a listener if there are vhosts bound to http.
-		cm := envoy_v3.HTTPConnectionManagerBuilder().
-			Codec(envoy_v3.CodecForVersions(lv.DefaultHTTPVersions...)).
-			DefaultFilters().
-			RouteConfigName(httpListener.Name).
-			MetricsPrefix(httpListener.Name).
-			AccessLoggers(lvc.newInsecureAccessLog()).
-			RequestTimeout(lvc.RequestTimeout).
-			ConnectionIdleTimeout(lvc.ConnectionIdleTimeout).
-			StreamIdleTimeout(lvc.StreamIdleTimeout).
-			DelayedCloseTimeout(lvc.DelayedCloseTimeout).
-			MaxConnectionDuration(lvc.MaxConnectionDuration).
-			ConnectionShutdownGracePeriod(lvc.ConnectionShutdownGracePeriod).
-			AllowChunkedLength(lvc.AllowChunkedLength).
-			NumTrustedHops(lvc.XffNumTrustedHops).
-			AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(lv.RateLimitConfig))).
-			Get()
+			listeners[listener.Name] = envoy_v3.Listener(
+				listener.Name,
+				listener.Address,
+				listener.Port,
+				cfg.PerConnectionBufferLimitBytes,
+				socketOptions,
+				proxyProtocol(cfg.UseProxyProto),
+				cm,
+			)
+		}
 
-		lv.listeners[httpListener.Name] = envoy_v3.Listener(
-			httpListener.Name,
-			httpListener.Address,
-			httpListener.Port,
-			proxyProtocol(lvc.UseProxyProto),
-			cm,
-		)
-	}
+		// If there are TLS vhosts, add a listener to which we
+		// will attach a filter chain per vhost matching on SNI,
+		// plus possibly one fallback cert filter chain.
+		if len(listener.SecureVirtualHosts) > 0 {
+			listeners[listener.Name] = envoy_v3.Listener(
+				listener.Name,
+				listener.Address,
+				listener.Port,
+				cfg.PerConnectionBufferLimitBytes,
+				socketOptions,
+				secureProxyProtocol(cfg.UseProxyProto),
+			)
+		}
 
-	// Remove the https listener if there are no vhosts bound to it.
-	if len(lv.listeners[ENVOY_HTTPS_LISTENER].FilterChains) == 0 {
-		delete(lv.listeners, ENVOY_HTTPS_LISTENER)
-	} else {
-		// there's some https listeners, we need to sort the filter chains
-		// to ensure that the LDS entries are identical.
-		sort.Stable(sorter.For(lv.listeners[ENVOY_HTTPS_LISTENER].FilterChains))
+		for _, vh := range listener.SecureVirtualHosts {
+			var alpnProtos []string
+			var filters []*envoy_config_listener_v3.Filter
+
+			var forwardClientCertificate *dag.ClientCertificateDetails
+			if vh.DownstreamValidation != nil {
+				forwardClientCertificate = vh.DownstreamValidation.ForwardClientCertificate
+			}
+
+			if vh.TCPProxy == nil {
+				var authzFilter *envoy_filter_network_http_connection_manager_v3.HttpFilter
+
+				if vh.ExternalAuthorization != nil {
+					authzFilter = envoy_v3.FilterExternalAuthz(vh.ExternalAuthorization)
+				}
+
+				// Create a uniquely named HTTP connection manager for
+				// this vhost, so that the SNI name the client requests
+				// only grants access to that host. See RFC 6066 for
+				// security advice. Note that we still use the generic
+				// metrics prefix to keep compatibility with previous
+				// Contour versions since the metrics prefix will be
+				// coded into monitoring dashboards.
+				cm := c.envoyGen.HTTPConnectionManagerBuilder().
+					Codec(envoy_v3.CodecForVersions(cfg.DefaultHTTPVersions...)).
+					AddFilter(envoy_v3.FilterMisdirectedRequests(vh.VirtualHost.Name)).
+					DefaultFilters().
+					AddFilter(envoy_v3.FilterJWTAuthN(vh.JWTProviders)).
+					AddFilter(authzFilter).
+					RouteConfigName(httpsRouteConfigName(listener, vh.VirtualHost.Name)).
+					MetricsPrefix(listener.Name).
+					AccessLoggers(cfg.newSecureAccessLog()).
+					RequestTimeout(cfg.Timeouts.Request).
+					ConnectionIdleTimeout(cfg.Timeouts.ConnectionIdle).
+					StreamIdleTimeout(cfg.Timeouts.StreamIdle).
+					DelayedCloseTimeout(cfg.Timeouts.DelayedClose).
+					MaxConnectionDuration(cfg.Timeouts.MaxConnectionDuration).
+					ConnectionShutdownGracePeriod(cfg.Timeouts.ConnectionShutdownGracePeriod).
+					AllowChunkedLength(cfg.AllowChunkedLength).
+					MergeSlashes(cfg.MergeSlashes).
+					ServerHeaderTransformation(cfg.ServerHeaderTransformation).
+					NumTrustedHops(cfg.XffNumTrustedHops).
+					StripTrailingHostDot(cfg.StripTrailingHostDot).
+					Tracing(envoy_v3.TracingConfig(envoyTracingConfig(cfg.TracingConfig))).
+					AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(cfg.RateLimitConfig))).
+					ForwardClientCertificate(forwardClientCertificate).
+					MaxRequestsPerConnection(cfg.MaxRequestsPerConnection).
+					HTTP2MaxConcurrentStreams(cfg.HTTP2MaxConcurrentStreams).
+					EnableWebsockets(listener.EnableWebsockets).
+					Get()
+
+				filters = envoy_v3.Filters(cm)
+
+				alpnProtos = envoy_v3.ProtoNamesForVersions(cfg.DefaultHTTPVersions...)
+			} else {
+				filters = envoy_v3.Filters(envoy_v3.TCPProxy(listener.Name, vh.TCPProxy, cfg.newSecureAccessLog()))
+
+				// Do not offer ALPN for TCP proxying, since
+				// the protocols will be provided by the TCP
+				// backend in its ServerHello.
+			}
+
+			var downstreamTLS *envoy_transport_socket_tls_v3.DownstreamTlsContext
+
+			// Secret is provided when TLS is terminated and nil when TLS passthrough is used.
+			if vh.Secret != nil {
+				// Choose the higher of the configured or requested TLS version.
+				minVer := max(cfg.minTLSVersion(), envoy_v3.ParseTLSVersion(vh.MinTLSVersion))
+
+				// Choose the lower of the configured or requested TLS version.
+				maxVer := min(cfg.maxTLSVersion(), envoy_v3.ParseTLSVersion(vh.MaxTLSVersion))
+				if maxVer == envoy_transport_socket_tls_v3.TlsParameters_TLS_AUTO {
+					maxVer = cfg.maxTLSVersion()
+				}
+
+				downstreamTLS = c.envoyGen.DownstreamTLSContext(
+					vh.Secret,
+					minVer,
+					maxVer,
+					cfg.CipherSuites,
+					vh.DownstreamValidation,
+					alpnProtos...)
+			}
+
+			listeners[listener.Name].FilterChains = append(listeners[listener.Name].FilterChains, envoy_v3.FilterChainTLS(vh.VirtualHost.Name, downstreamTLS, filters))
+
+			// If this VirtualHost has enabled the fallback certificate then set a default
+			// FilterChain which will allow routes with this vhost to accept non-SNI TLS requests.
+			// Note that we don't add the misdirected requests filter on this chain because at this
+			// point we don't actually know the full set of server names that will be bound to the
+			// filter chain through the ENVOY_FALLBACK_ROUTECONFIG route configuration.
+			if vh.FallbackCertificate != nil && !envoy_v3.ContainsFallbackFilterChain(listeners[listener.Name].FilterChains) {
+				// Construct the downstreamTLSContext passing the configured fallbackCertificate. The TLS min/max ProtocolVersion will use
+				// the value defined in the Contour Configuration file if defined.
+				downstreamTLS = c.envoyGen.DownstreamTLSContext(
+					vh.FallbackCertificate,
+					cfg.minTLSVersion(),
+					cfg.maxTLSVersion(),
+					cfg.CipherSuites,
+					vh.DownstreamValidation,
+					alpnProtos...,
+				)
+
+				var authzFilter *envoy_filter_network_http_connection_manager_v3.HttpFilter
+				if vh.ExternalAuthorization != nil {
+					authzFilter = envoy_v3.FilterExternalAuthz(vh.ExternalAuthorization)
+				}
+
+				cm := c.envoyGen.HTTPConnectionManagerBuilder().
+					DefaultFilters().
+					AddFilter(authzFilter).
+					RouteConfigName(fallbackCertRouteConfigName(listener)).
+					MetricsPrefix(listener.Name).
+					AccessLoggers(cfg.newSecureAccessLog()).
+					RequestTimeout(cfg.Timeouts.Request).
+					ConnectionIdleTimeout(cfg.Timeouts.ConnectionIdle).
+					StreamIdleTimeout(cfg.Timeouts.StreamIdle).
+					DelayedCloseTimeout(cfg.Timeouts.DelayedClose).
+					MaxConnectionDuration(cfg.Timeouts.MaxConnectionDuration).
+					ConnectionShutdownGracePeriod(cfg.Timeouts.ConnectionShutdownGracePeriod).
+					AllowChunkedLength(cfg.AllowChunkedLength).
+					MergeSlashes(cfg.MergeSlashes).
+					ServerHeaderTransformation(cfg.ServerHeaderTransformation).
+					NumTrustedHops(cfg.XffNumTrustedHops).
+					StripTrailingHostDot(cfg.StripTrailingHostDot).
+					Tracing(envoy_v3.TracingConfig(envoyTracingConfig(cfg.TracingConfig))).
+					AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(cfg.RateLimitConfig))).
+					ForwardClientCertificate(forwardClientCertificate).
+					MaxRequestsPerConnection(cfg.MaxRequestsPerConnection).
+					HTTP2MaxConcurrentStreams(cfg.HTTP2MaxConcurrentStreams).
+					EnableWebsockets(listener.EnableWebsockets).
+					Get()
+
+				// Default filter chain
+				filters = envoy_v3.Filters(cm)
+
+				listeners[listener.Name].FilterChains = append(listeners[listener.Name].FilterChains, envoy_v3.FilterChainTLSFallback(downstreamTLS, filters))
+			}
+		}
+
+		// Remove the https listener if there are no vhosts bound to it.
+		if listener := listeners[listener.Name]; listener != nil && len(listener.FilterChains) == 0 {
+			delete(listeners, listener.Name)
+		} else {
+			// there's some https listeners, we need to sort the filter chains
+			// to ensure that the LDS entries are identical.
+			sort.Stable(sorter.For(listener.FilterChains))
+		}
 	}
 
 	// support more params of envoy listener
 
 	// 1. connection balancer
-	switch lvc.ConnectionBalancer {
-	case "exact":
-		for _, listener := range lv.listeners {
-			listener.ConnectionBalanceConfig = &envoy_listener_v3.Listener_ConnectionBalanceConfig{
-				BalanceType: &envoy_listener_v3.Listener_ConnectionBalanceConfig_ExactBalance_{
-					ExactBalance: &envoy_listener_v3.Listener_ConnectionBalanceConfig_ExactBalance{},
+	if cfg.ConnectionBalancer == "exact" {
+		for _, listener := range listeners {
+			listener.ConnectionBalanceConfig = &envoy_config_listener_v3.Listener_ConnectionBalanceConfig{
+				BalanceType: &envoy_config_listener_v3.Listener_ConnectionBalanceConfig_ExactBalance_{
+					ExactBalance: &envoy_config_listener_v3.Listener_ConnectionBalanceConfig_ExactBalance{},
 				},
 			}
 		}
 	}
 
-	return lv.listeners
+	c.Update(listeners)
+}
+
+func httpGlobalExternalAuthConfig(config *GlobalExternalAuthConfig) *envoy_filter_network_http_connection_manager_v3.HttpFilter {
+	if config == nil {
+		return nil
+	}
+
+	return envoy_v3.FilterExternalAuthz(&dag.ExternalAuthorization{
+		AuthorizationService: &dag.ExtensionCluster{
+			Name: dag.ExtensionClusterName(config.ExtensionServiceConfig.ExtensionService),
+			SNI:  config.ExtensionServiceConfig.SNI,
+		},
+		AuthorizationFailOpen:              config.FailOpen,
+		AuthorizationResponseTimeout:       config.ExtensionServiceConfig.Timeout,
+		AuthorizationServerWithRequestBody: config.WithRequestBody,
+	})
 }
 
 func envoyGlobalRateLimitConfig(config *RateLimitConfig) *envoy_v3.GlobalRateLimitConfig {
@@ -556,15 +609,49 @@ func envoyGlobalRateLimitConfig(config *RateLimitConfig) *envoy_v3.GlobalRateLim
 	}
 
 	return &envoy_v3.GlobalRateLimitConfig{
-		ExtensionService:        config.ExtensionService,
-		FailOpen:                config.FailOpen,
-		Timeout:                 config.Timeout,
-		Domain:                  config.Domain,
-		EnableXRateLimitHeaders: config.EnableXRateLimitHeaders,
+		ExtensionService:            config.ExtensionServiceConfig.ExtensionService,
+		SNI:                         config.ExtensionServiceConfig.SNI,
+		FailOpen:                    config.FailOpen,
+		Timeout:                     config.ExtensionServiceConfig.Timeout,
+		Domain:                      config.Domain,
+		EnableXRateLimitHeaders:     config.EnableXRateLimitHeaders,
+		EnableResourceExhaustedCode: config.EnableResourceExhaustedCode,
 	}
 }
 
-func proxyProtocol(useProxy bool) []*envoy_listener_v3.ListenerFilter {
+func envoyTracingConfig(config *TracingConfig) *envoy_v3.EnvoyTracingConfig {
+	if config == nil {
+		return nil
+	}
+
+	return &envoy_v3.EnvoyTracingConfig{
+		ExtensionService: config.ExtensionServiceConfig.ExtensionService,
+		ServiceName:      config.ServiceName,
+		SNI:              config.ExtensionServiceConfig.SNI,
+		Timeout:          config.ExtensionServiceConfig.Timeout,
+		OverallSampling:  config.OverallSampling,
+		MaxPathTagLength: config.MaxPathTagLength,
+		CustomTags:       envoyTracingConfigCustomTag(config.CustomTags),
+	}
+}
+
+func envoyTracingConfigCustomTag(tags []*CustomTag) []*envoy_v3.CustomTag {
+	if tags == nil {
+		return nil
+	}
+	customTags := make([]*envoy_v3.CustomTag, len(tags))
+	for i, tag := range tags {
+		customTags[i] = &envoy_v3.CustomTag{
+			TagName:           tag.TagName,
+			Literal:           tag.Literal,
+			EnvironmentName:   tag.EnvironmentName,
+			RequestHeaderName: tag.RequestHeaderName,
+		}
+	}
+	return customTags
+}
+
+func proxyProtocol(useProxy bool) []*envoy_config_listener_v3.ListenerFilter {
 	if useProxy {
 		return envoy_v3.ListenerFilters(
 			envoy_v3.ProxyProtocol(),
@@ -573,138 +660,6 @@ func proxyProtocol(useProxy bool) []*envoy_listener_v3.ListenerFilter {
 	return nil
 }
 
-func secureProxyProtocol(useProxy bool) []*envoy_listener_v3.ListenerFilter {
+func secureProxyProtocol(useProxy bool) []*envoy_config_listener_v3.ListenerFilter {
 	return append(proxyProtocol(useProxy), envoy_v3.TLSInspector())
-}
-
-func (v *listenerVisitor) visit(vertex dag.Vertex) {
-	max := func(a, b envoy_tls_v3.TlsParameters_TlsProtocol) envoy_tls_v3.TlsParameters_TlsProtocol {
-		if a > b {
-			return a
-		}
-		return b
-	}
-
-	switch vh := vertex.(type) {
-	case *dag.VirtualHost:
-		// we only create on http listener so record the fact
-		// that we need to then double back at the end and add
-		// the listener properly
-		v.httpListenerName = vh.ListenerName
-	case *dag.SecureVirtualHost:
-		var alpnProtos []string
-		var filters []*envoy_listener_v3.Filter
-
-		if vh.TCPProxy == nil {
-			var authFilter *http.HttpFilter
-
-			if vh.AuthorizationService != nil {
-				authFilter = envoy_v3.FilterExternalAuthz(
-					vh.AuthorizationService.Name,
-					vh.AuthorizationFailOpen,
-					vh.AuthorizationResponseTimeout,
-				)
-			}
-
-			// Create a uniquely named HTTP connection manager for
-			// this vhost, so that the SNI name the client requests
-			// only grants access to that host. See RFC 6066 for
-			// security advice. Note that we still use the generic
-			// metrics prefix to keep compatibility with previous
-			// Contour versions since the metrics prefix will be
-			// coded into monitoring dashboards.
-			cm := envoy_v3.HTTPConnectionManagerBuilder().
-				Codec(envoy_v3.CodecForVersions(v.DefaultHTTPVersions...)).
-				AddFilter(envoy_v3.FilterMisdirectedRequests(vh.VirtualHost.Name)).
-				DefaultFilters().
-				AddFilter(authFilter).
-				RouteConfigName(path.Join("https", vh.VirtualHost.Name)).
-				MetricsPrefix(vh.ListenerName).
-				AccessLoggers(v.ListenerConfig.newSecureAccessLog()).
-				RequestTimeout(v.ListenerConfig.RequestTimeout).
-				ConnectionIdleTimeout(v.ListenerConfig.ConnectionIdleTimeout).
-				StreamIdleTimeout(v.ListenerConfig.StreamIdleTimeout).
-				DelayedCloseTimeout(v.ListenerConfig.DelayedCloseTimeout).
-				MaxConnectionDuration(v.ListenerConfig.MaxConnectionDuration).
-				ConnectionShutdownGracePeriod(v.ListenerConfig.ConnectionShutdownGracePeriod).
-				AllowChunkedLength(v.ListenerConfig.AllowChunkedLength).
-				NumTrustedHops(v.ListenerConfig.XffNumTrustedHops).
-				AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(v.RateLimitConfig))).
-				Get()
-
-			filters = envoy_v3.Filters(cm)
-
-			alpnProtos = envoy_v3.ProtoNamesForVersions(v.DefaultHTTPVersions...)
-		} else {
-			filters = envoy_v3.Filters(
-				envoy_v3.TCPProxy(vh.ListenerName,
-					vh.TCPProxy,
-					v.ListenerConfig.newSecureAccessLog()),
-			)
-
-			// Do not offer ALPN for TCP proxying, since
-			// the protocols will be provided by the TCP
-			// backend in its ServerHello.
-		}
-
-		var downstreamTLS *envoy_tls_v3.DownstreamTlsContext
-
-		// Secret is provided when TLS is terminated and nil when TLS passthrough is used.
-		if vh.Secret != nil {
-			// Choose the higher of the configured or requested TLS version.
-			vers := max(v.ListenerConfig.minTLSVersion(), envoy_v3.ParseTLSVersion(vh.MinTLSVersion))
-
-			downstreamTLS = envoy_v3.DownstreamTLSContext(
-				vh.Secret,
-				vers,
-				v.ListenerConfig.CipherSuites,
-				vh.DownstreamValidation,
-				alpnProtos...)
-		}
-
-		v.listeners[vh.ListenerName].FilterChains = append(v.listeners[vh.ListenerName].FilterChains,
-			envoy_v3.FilterChainTLS(vh.VirtualHost.Name, downstreamTLS, filters))
-
-		// If this VirtualHost has enabled the fallback certificate then set a default
-		// FilterChain which will allow routes with this vhost to accept non-SNI TLS requests.
-		// Note that we don't add the misdirected requests filter on this chain because at this
-		// point we don't actually know the full set of server names that will be bound to the
-		// filter chain through the ENVOY_FALLBACK_ROUTECONFIG route configuration.
-		if vh.FallbackCertificate != nil && !envoy_v3.ContainsFallbackFilterChain(v.listeners[vh.ListenerName].FilterChains) {
-			// Construct the downstreamTLSContext passing the configured fallbackCertificate. The TLS minProtocolVersion will use
-			// the value defined in the Contour Configuration file if defined.
-			downstreamTLS = envoy_v3.DownstreamTLSContext(
-				vh.FallbackCertificate,
-				v.ListenerConfig.minTLSVersion(),
-				v.ListenerConfig.CipherSuites,
-				vh.DownstreamValidation,
-				alpnProtos...)
-
-			cm := envoy_v3.HTTPConnectionManagerBuilder().
-				DefaultFilters().
-				RouteConfigName(ENVOY_FALLBACK_ROUTECONFIG).
-				MetricsPrefix(vh.ListenerName).
-				AccessLoggers(v.ListenerConfig.newSecureAccessLog()).
-				RequestTimeout(v.ListenerConfig.RequestTimeout).
-				ConnectionIdleTimeout(v.ListenerConfig.ConnectionIdleTimeout).
-				StreamIdleTimeout(v.ListenerConfig.StreamIdleTimeout).
-				DelayedCloseTimeout(v.ListenerConfig.DelayedCloseTimeout).
-				MaxConnectionDuration(v.ListenerConfig.MaxConnectionDuration).
-				ConnectionShutdownGracePeriod(v.ListenerConfig.ConnectionShutdownGracePeriod).
-				AllowChunkedLength(v.ListenerConfig.AllowChunkedLength).
-				NumTrustedHops(v.ListenerConfig.XffNumTrustedHops).
-				AddFilter(envoy_v3.GlobalRateLimitFilter(envoyGlobalRateLimitConfig(v.RateLimitConfig))).
-				Get()
-
-			// Default filter chain
-			filters = envoy_v3.Filters(cm)
-
-			v.listeners[vh.ListenerName].FilterChains = append(v.listeners[vh.ListenerName].FilterChains,
-				envoy_v3.FilterChainTLSFallback(downstreamTLS, filters))
-		}
-
-	default:
-		// recurse
-		vertex.Visit(v.visit)
-	}
 }

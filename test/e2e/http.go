@@ -12,17 +12,17 @@
 // limitations under the License.
 
 //go:build e2e
-// +build e2e
 
 package e2e
 
 import (
+	"context"
 	"crypto/tls"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -60,8 +60,18 @@ type HTTP struct {
 type HTTPRequestOpts struct {
 	Path        string
 	Host        string
+	OverrideURL string
+	Body        io.Reader
 	RequestOpts []func(*http.Request)
-	Condition   func(*http.Response) bool
+	ClientOpts  []func(*http.Client)
+	Condition   func(*HTTPResponse) bool
+}
+
+func (o *HTTPRequestOpts) requestURLBase(defaultURL string) string {
+	if o.OverrideURL != "" {
+		return o.OverrideURL
+	}
+	return defaultURL
 }
 
 func OptSetHeaders(headers map[string]string) func(*http.Request) {
@@ -72,11 +82,42 @@ func OptSetHeaders(headers map[string]string) func(*http.Request) {
 	}
 }
 
+func OptSetQueryParams(queryParams map[string]string) func(*http.Request) {
+	return func(r *http.Request) {
+		q := r.URL.Query()
+		for k, v := range queryParams {
+			q.Add(k, v)
+		}
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
+// httpClient returns an *http.Client with its own transport
+// and keep alives disabled.
+func httpClient(opts ...func(*http.Client)) *http.Client {
+	// Clone the DefaultTransport and disable keep alives
+	// so we don't reuse connections within this method or
+	// across multiple calls to this method. This helps
+	// prevent requests from inadvertently being made to
+	// a draining Listener.
+	transport := makeDisableKeepAlivesTransport()
+
+	client := &http.Client{
+		Transport: transport,
+	}
+
+	for _, opt := range opts {
+		opt(client)
+	}
+
+	return client
+}
+
 // RequestUntil repeatedly makes HTTP requests with the provided
 // parameters until "condition" returns true or the timeout is reached.
 // It always returns the last HTTP response received.
 func (h *HTTP) RequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) {
-	req, err := http.NewRequest("GET", h.HTTPURLBase+opts.Path, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPURLBase)+opts.Path, opts.Body)
 	require.NoError(h.t, err, "error creating HTTP request")
 
 	req.Host = opts.Host
@@ -84,26 +125,74 @@ func (h *HTTP) RequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) {
 		opt(req)
 	}
 
+	client := httpClient(opts.ClientOpts...)
+
 	makeRequest := func() (*http.Response, error) {
-		return http.DefaultClient.Do(req)
+		return client.Do(req)
 	}
 
 	return h.requestUntil(makeRequest, opts.Condition)
+}
+
+// Request makes a single HTTP request with the provided parameters
+// and returns the HTTP response or an error. Note that opts.Condition is
+// ignored by this method.
+//
+// In general, E2E's should use RequestUntil instead of this method since
+// RequestUntil will retry requests to account for eventual consistency and
+// other ephemeral issues.
+func (h *HTTP) Request(opts *HTTPRequestOpts) (*HTTPResponse, error) {
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPURLBase)+opts.Path, nil)
+	require.NoError(h.t, err, "error creating HTTP request")
+
+	req.Host = opts.Host
+	for _, opt := range opts.RequestOpts {
+		opt(req)
+	}
+
+	client := httpClient(opts.ClientOpts...)
+
+	r, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Body.Close()
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	require.NoError(h.t, err)
+
+	return &HTTPResponse{
+		StatusCode: r.StatusCode,
+		Headers:    r.Header,
+		Body:       bodyBytes,
+	}, nil
+}
+
+func OptDontFollowRedirects(c *http.Client) {
+	// Per CheckRedirect godoc: "As a special case, if
+	// CheckRedirect returns ErrUseLastResponse, then
+	// the most recent response is returned with its body
+	// unclosed, along with a nil error."
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 }
 
 // MetricsRequestUntil repeatedly makes HTTP requests with the provided
 // parameters until "condition" returns true or the timeout is reached.
 // It always returns the last HTTP response received.
 func (h *HTTP) MetricsRequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) {
-	req, err := http.NewRequest("GET", h.HTTPURLMetricsBase+opts.Path, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPURLMetricsBase)+opts.Path, nil)
 	require.NoError(h.t, err, "error creating HTTP request")
 
 	for _, opt := range opts.RequestOpts {
 		opt(req)
 	}
 
+	client := httpClient(opts.ClientOpts...)
+
 	makeRequest := func() (*http.Response, error) {
-		return http.DefaultClient.Do(req)
+		return client.Do(req)
 	}
 
 	return h.requestUntil(makeRequest, opts.Condition)
@@ -113,15 +202,17 @@ func (h *HTTP) MetricsRequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) 
 // parameters until "condition" returns true or the timeout is reached.
 // It always returns the last HTTP response received.
 func (h *HTTP) AdminRequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) {
-	req, err := http.NewRequest("GET", h.HTTPURLAdminBase+opts.Path, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPURLAdminBase)+opts.Path, nil)
 	require.NoError(h.t, err, "error creating HTTP request")
 
 	for _, opt := range opts.RequestOpts {
 		opt(req)
 	}
 
+	client := httpClient(opts.ClientOpts...)
+
 	makeRequest := func() (*http.Response, error) {
-		return http.DefaultClient.Do(req)
+		return client.Do(req)
 	}
 
 	return h.requestUntil(makeRequest, opts.Condition)
@@ -130,9 +221,18 @@ func (h *HTTP) AdminRequestUntil(opts *HTTPRequestOpts) (*HTTPResponse, bool) {
 type HTTPSRequestOpts struct {
 	Path          string
 	Host          string
+	OverrideURL   string
+	Body          io.Reader
 	RequestOpts   []func(*http.Request)
 	TLSConfigOpts []func(*tls.Config)
-	Condition     func(*http.Response) bool
+	Condition     func(*HTTPResponse) bool
+}
+
+func (o *HTTPSRequestOpts) requestURLBase(defaultURL string) string {
+	if o.OverrideURL != "" {
+		return o.OverrideURL
+	}
+	return defaultURL
 }
 
 func OptSetSNI(name string) func(*tls.Config) {
@@ -145,7 +245,7 @@ func OptSetSNI(name string) func(*tls.Config) {
 // parameters until "condition" returns true or the timeout is reached.
 // It always returns the last HTTP response received.
 func (h *HTTP) SecureRequestUntil(opts *HTTPSRequestOpts) (*HTTPResponse, bool) {
-	req, err := http.NewRequest("GET", h.HTTPSURLBase+opts.Path, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPSURLBase)+opts.Path, opts.Body)
 	require.NoError(h.t, err, "error creating HTTP request")
 
 	req.Host = opts.Host
@@ -153,18 +253,17 @@ func (h *HTTP) SecureRequestUntil(opts *HTTPSRequestOpts) (*HTTPResponse, bool) 
 		opt(req)
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	client := httpClient()
+	transport := client.Transport.(*http.Transport)
+
 	transport.TLSClientConfig = &tls.Config{
 		ServerName: opts.Host,
 		//nolint:gosec
 		InsecureSkipVerify: true,
 	}
+
 	for _, opt := range opts.TLSConfigOpts {
 		opt(transport.TLSClientConfig)
-	}
-
-	client := &http.Client{
-		Transport: transport,
 	}
 
 	makeRequest := func() (*http.Response, error) {
@@ -182,7 +281,7 @@ func (h *HTTP) SecureRequestUntil(opts *HTTPSRequestOpts) (*HTTPResponse, bool) 
 // SecureRequestUntil will retry requests to account for eventual consistency and
 // other ephemeral issues.
 func (h *HTTP) SecureRequest(opts *HTTPSRequestOpts) (*HTTPResponse, error) {
-	req, err := http.NewRequest("GET", h.HTTPSURLBase+opts.Path, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.requestURLBase(h.HTTPSURLBase)+opts.Path, nil)
 	require.NoError(h.t, err, "error creating HTTP request")
 
 	req.Host = opts.Host
@@ -190,7 +289,7 @@ func (h *HTTP) SecureRequest(opts *HTTPSRequestOpts) (*HTTPResponse, error) {
 		opt(req)
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := makeDisableKeepAlivesTransport()
 	transport.TLSClientConfig = &tls.Config{
 		ServerName: opts.Host,
 		//nolint:gosec
@@ -210,7 +309,7 @@ func (h *HTTP) SecureRequest(opts *HTTPSRequestOpts) (*HTTPResponse, error) {
 	}
 	defer r.Body.Close()
 
-	bodyBytes, err := ioutil.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(r.Body)
 	require.NoError(h.t, err)
 
 	return &HTTPResponse{
@@ -220,12 +319,13 @@ func (h *HTTP) SecureRequest(opts *HTTPSRequestOpts) (*HTTPResponse, error) {
 	}, nil
 }
 
-func (h *HTTP) requestUntil(makeRequest func() (*http.Response, error), condition func(*http.Response) bool) (*HTTPResponse, bool) {
+func (h *HTTP) requestUntil(makeRequest func() (*http.Response, error), condition func(*HTTPResponse) bool) (*HTTPResponse, bool) {
 	var res *HTTPResponse
 
-	if err := wait.PollImmediate(h.RetryInterval, h.RetryTimeout, func() (bool, error) {
+	if err := wait.PollUntilContextTimeout(context.Background(), h.RetryInterval, h.RetryTimeout, true, func(context.Context) (bool, error) {
 		r, err := makeRequest()
 		if err != nil {
+			h.t.Logf("request error: %s", err)
 			// if there was an error, we want to keep
 			// retrying, so just return false, not an
 			// error.
@@ -233,7 +333,7 @@ func (h *HTTP) requestUntil(makeRequest func() (*http.Response, error), conditio
 		}
 		defer r.Body.Close()
 
-		bodyBytes, err := ioutil.ReadAll(r.Body)
+		bodyBytes, err := io.ReadAll(r.Body)
 		require.NoError(h.t, err)
 
 		res = &HTTPResponse{
@@ -243,7 +343,7 @@ func (h *HTTP) requestUntil(makeRequest func() (*http.Response, error), conditio
 		}
 
 		if condition != nil {
-			return condition(r), nil
+			return condition(res), nil
 		}
 		return false, nil
 	}); err != nil {
@@ -262,8 +362,15 @@ type HTTPResponse struct {
 // HasStatusCode returns a function that returns true
 // if the response has the specified status code, or
 // false otherwise.
-func HasStatusCode(code int) func(*http.Response) bool {
-	return func(res *http.Response) bool {
+func HasStatusCode(code int) func(*HTTPResponse) bool {
+	return func(res *HTTPResponse) bool {
 		return res != nil && res.StatusCode == code
 	}
+}
+
+func makeDisableKeepAlivesTransport() *http.Transport {
+	//nolint:forbidigo
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	return transport
 }

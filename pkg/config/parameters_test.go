@@ -17,11 +17,11 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
+	"k8s.io/utils/ptr"
 )
 
 func TestGetenvOr(t *testing.T) {
@@ -47,46 +47,43 @@ func TestParseDefaults(t *testing.T) {
 	expected := `
 debug: false
 kubeconfig: TestParseDefaults/.kube/config
-server:
-  xds-server-type: contour
 accesslog-format: envoy
 json-fields:
-- '@timestamp'
-- authority
-- bytes_received
-- bytes_sent
-- downstream_local_address
-- downstream_remote_address
-- duration
-- method
-- path
-- protocol
-- request_id
-- requested_server_name
-- response_code
-- response_flags
-- uber_trace_id
-- upstream_cluster
-- upstream_host
-- upstream_local_address
-- upstream_service_time
-- user_agent
-- x_forwarded_for
-leaderelection:
-  lease-duration: 15s
-  renew-deadline: 10s
-  retry-period: 2s
-  configmap-namespace: projectcontour
-  configmap-name: leader-elect
+    - '@timestamp'
+    - authority
+    - bytes_received
+    - bytes_sent
+    - downstream_local_address
+    - downstream_remote_address
+    - duration
+    - method
+    - path
+    - protocol
+    - request_id
+    - requested_server_name
+    - response_code
+    - response_flags
+    - uber_trace_id
+    - upstream_cluster
+    - upstream_host
+    - upstream_local_address
+    - upstream_service_time
+    - user_agent
+    - x_forwarded_for
+    - grpc_status
+    - grpc_status_number
+accesslog-level: info
+serverHeaderTransformation: overwrite
 timeouts:
-  connection-idle-timeout: 60s
+    connection-idle-timeout: 60s
+    connect-timeout: 2s
 envoy-service-namespace: projectcontour
 envoy-service-name: envoy
 default-http-versions: []
 cluster:
-  dns-lookup-family: auto
+    dns-lookup-family: auto
 network:
-  admin-port: 9001
+    admin-port: 9001
 `
 	assert.Equal(t, strings.TrimSpace(expected), strings.TrimSpace(string(data)))
 
@@ -123,38 +120,48 @@ policy:
 }
 
 func TestValidateClusterDNSFamilyType(t *testing.T) {
-	assert.Error(t, ClusterDNSFamilyType("").Validate())
-	assert.Error(t, ClusterDNSFamilyType("foo").Validate())
+	require.Error(t, ClusterDNSFamilyType("").Validate())
+	require.Error(t, ClusterDNSFamilyType("foo").Validate())
 
-	assert.NoError(t, AutoClusterDNSFamily.Validate())
-	assert.NoError(t, IPv4ClusterDNSFamily.Validate())
-	assert.NoError(t, IPv6ClusterDNSFamily.Validate())
+	require.NoError(t, AutoClusterDNSFamily.Validate())
+	require.NoError(t, IPv4ClusterDNSFamily.Validate())
+	require.NoError(t, IPv6ClusterDNSFamily.Validate())
+	require.NoError(t, AllClusterDNSFamily.Validate())
+}
+
+func TestValidateServerHeaderTranformationType(t *testing.T) {
+	require.Error(t, ServerHeaderTransformationType("").Validate())
+	require.Error(t, ServerHeaderTransformationType("foo").Validate())
+
+	require.NoError(t, OverwriteServerHeader.Validate())
+	require.NoError(t, AppendIfAbsentServerHeader.Validate())
+	require.NoError(t, PassThroughServerHeader.Validate())
 }
 
 func TestValidateHeadersPolicy(t *testing.T) {
-	assert.Error(t, HeadersPolicy{
+	require.Error(t, HeadersPolicy{
 		Set: map[string]string{
 			"inv@lid-header": "ook",
 		},
 	}.Validate())
-	assert.Error(t, HeadersPolicy{
+	require.Error(t, HeadersPolicy{
 		Remove: []string{"inv@lid-header"},
 	}.Validate())
-	assert.NoError(t, HeadersPolicy{
+	require.NoError(t, HeadersPolicy{
 		Set:    map[string]string{},
 		Remove: []string{},
 	}.Validate())
-	assert.NoError(t, HeadersPolicy{
+	require.NoError(t, HeadersPolicy{
 		Set: map[string]string{"X-Envoy-Host": "envoy-a12345"},
 	}.Validate())
-	assert.NoError(t, HeadersPolicy{
+	require.NoError(t, HeadersPolicy{
 		Set: map[string]string{
 			"X-Envoy-Host":     "envoy-s12345",
 			"l5d-dst-override": "kuard.default.svc.cluster.local:80",
 		},
 		Remove: []string{"Sensitive-Header"},
 	}.Validate())
-	assert.NoError(t, HeadersPolicy{
+	require.NoError(t, HeadersPolicy{
 		Set: map[string]string{
 			"X-Envoy-Host":     "%HOSTNAME%",
 			"l5d-dst-override": "%CONTOUR_SERVICE_NAME%.%CONTOUR_NAMESPACE%.svc.cluster.local:%CONTOUR_SERVICE_PORT%",
@@ -163,130 +170,80 @@ func TestValidateHeadersPolicy(t *testing.T) {
 }
 
 func TestValidateNamespacedName(t *testing.T) {
-	assert.NoErrorf(t, NamespacedName{}.Validate(), "empty name should be OK")
-	assert.NoError(t, NamespacedName{Name: "name", Namespace: "ns"}.Validate())
+	require.NoErrorf(t, NamespacedName{}.Validate(), "empty name should be OK")
+	require.NoError(t, NamespacedName{Name: "name", Namespace: "ns"}.Validate())
 
-	assert.Error(t, NamespacedName{Name: "name"}.Validate())
-	assert.Error(t, NamespacedName{Namespace: "ns"}.Validate())
-}
-
-func TestValidateServerType(t *testing.T) {
-	assert.Error(t, ServerType("").Validate())
-	assert.Error(t, ServerType("foo").Validate())
-
-	assert.NoError(t, EnvoyServerType.Validate())
-	assert.NoError(t, ContourServerType.Validate())
+	require.Error(t, NamespacedName{Name: "name"}.Validate())
+	require.Error(t, NamespacedName{Namespace: "ns"}.Validate())
 }
 
 func TestValidateGatewayParameters(t *testing.T) {
 	// Not required if nothing is passed.
 	var gw *GatewayParameters
-	assert.Equal(t, nil, gw.Validate())
+	require.NoError(t, gw.Validate())
 
-	// ControllerName is required.
-	gw = &GatewayParameters{ControllerName: "controller"}
-	assert.Equal(t, nil, gw.Validate())
-}
+	// Namespace and name are required
+	gw = &GatewayParameters{GatewayRef: NamespacedName{Namespace: "foo", Name: "bar"}}
+	require.NoError(t, gw.Validate())
 
-func TestValidateAccessLogType(t *testing.T) {
-	assert.Error(t, AccessLogType("").Validate())
-	assert.Error(t, AccessLogType("foo").Validate())
+	// Namespace is required
+	gw = &GatewayParameters{GatewayRef: NamespacedName{Name: "bar"}}
+	require.Error(t, gw.Validate())
 
-	assert.NoError(t, EnvoyAccessLog.Validate())
-	assert.NoError(t, JSONAccessLog.Validate())
-}
-
-func TestValidateAccessLogFields(t *testing.T) {
-	errorCases := [][]string{
-		{"dog", "cat"},
-		{"req"},
-		{"resp"},
-		{"trailer"},
-		{"@timestamp", "dog"},
-		{"@timestamp", "content-id=%REQ=dog%"},
-		{"@timestamp", "content-id=%dog(%"},
-		{"@timestamp", "content-id=%REQ()%"},
-		{"@timestamp", "content-id=%DOG%"},
-		{"@timestamp", "duration=my durations % are %DURATION%.0 and %REQ(:METHOD)%"},
-		{"invalid=%REQ%"},
-		{"invalid=%TRAILER%"},
-		{"invalid=%RESP%"},
-		{"invalid=%REQ_WITHOUT_QUERY%"},
-		{"@timestamp", "invalid=%START_TIME(%s.%6f):10%"},
-	}
-
-	for _, c := range errorCases {
-		assert.Error(t, AccessLogFields(c).Validate(), c)
-	}
-
-	successCases := [][]string{
-		{"@timestamp", "method"},
-		{"start_time"},
-		{"@timestamp", "response_duration"},
-		{"@timestamp", "duration=%DURATION%.0"},
-		{"@timestamp", "duration=My duration=%DURATION%.0"},
-		{"@timestamp", "duration=%START_TIME(%s.%6f)%"},
-		{"@timestamp", "content-id=%REQ(X-CONTENT-ID)%"},
-		{"@timestamp", "content-id=%REQ(X-CONTENT-ID):10%"},
-		{"@timestamp", "length=%RESP(CONTENT-LENGTH):10%"},
-		{"@timestamp", "trailer=%TRAILER(CONTENT-LENGTH):10%"},
-		{"@timestamp", "duration=my durations are %DURATION%.0 and method is %REQ(:METHOD)%"},
-		{"path=%REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)%"},
-		{"dog=pug", "cat=black"},
-	}
-
-	for _, c := range successCases {
-		assert.NoError(t, AccessLogFields(c).Validate(), c)
-	}
+	// Name is required
+	gw = &GatewayParameters{GatewayRef: NamespacedName{Namespace: "foo"}}
+	require.Error(t, gw.Validate())
 }
 
 func TestValidateHTTPVersionType(t *testing.T) {
-	assert.Error(t, HTTPVersionType("").Validate())
-	assert.Error(t, HTTPVersionType("foo").Validate())
-	assert.Error(t, HTTPVersionType("HTTP/1.1").Validate())
-	assert.Error(t, HTTPVersionType("HTTP/2").Validate())
+	require.Error(t, HTTPVersionType("").Validate())
+	require.Error(t, HTTPVersionType("foo").Validate())
+	require.Error(t, HTTPVersionType("HTTP/1.1").Validate())
+	require.Error(t, HTTPVersionType("HTTP/2").Validate())
 
-	assert.NoError(t, HTTPVersion1.Validate())
-	assert.NoError(t, HTTPVersion2.Validate())
+	require.NoError(t, HTTPVersion1.Validate())
+	require.NoError(t, HTTPVersion2.Validate())
 }
 
 func TestValidateTimeoutParams(t *testing.T) {
-	assert.NoError(t, TimeoutParameters{}.Validate())
-	assert.NoError(t, TimeoutParameters{
+	require.NoError(t, TimeoutParameters{}.Validate())
+	require.NoError(t, TimeoutParameters{
 		RequestTimeout:                "infinite",
 		ConnectionIdleTimeout:         "infinite",
 		StreamIdleTimeout:             "infinite",
 		MaxConnectionDuration:         "infinite",
 		DelayedCloseTimeout:           "infinite",
 		ConnectionShutdownGracePeriod: "infinite",
+		ConnectTimeout:                "2s",
 	}.Validate())
-	assert.NoError(t, TimeoutParameters{
+	require.NoError(t, TimeoutParameters{
 		RequestTimeout:                "infinity",
 		ConnectionIdleTimeout:         "infinity",
 		StreamIdleTimeout:             "infinity",
 		MaxConnectionDuration:         "infinity",
 		DelayedCloseTimeout:           "infinity",
 		ConnectionShutdownGracePeriod: "infinity",
+		ConnectTimeout:                "2s",
 	}.Validate())
 
-	assert.Error(t, TimeoutParameters{RequestTimeout: "foo"}.Validate())
-	assert.Error(t, TimeoutParameters{ConnectionIdleTimeout: "bar"}.Validate())
-	assert.Error(t, TimeoutParameters{StreamIdleTimeout: "baz"}.Validate())
-	assert.Error(t, TimeoutParameters{MaxConnectionDuration: "boop"}.Validate())
-	assert.Error(t, TimeoutParameters{DelayedCloseTimeout: "bebop"}.Validate())
-	assert.Error(t, TimeoutParameters{ConnectionShutdownGracePeriod: "bong"}.Validate())
-
+	require.Error(t, TimeoutParameters{RequestTimeout: "foo"}.Validate())
+	require.Error(t, TimeoutParameters{ConnectionIdleTimeout: "bar"}.Validate())
+	require.Error(t, TimeoutParameters{StreamIdleTimeout: "baz"}.Validate())
+	require.Error(t, TimeoutParameters{MaxConnectionDuration: "boop"}.Validate())
+	require.Error(t, TimeoutParameters{DelayedCloseTimeout: "bebop"}.Validate())
+	require.Error(t, TimeoutParameters{ConnectionShutdownGracePeriod: "bong"}.Validate())
+	require.Error(t, TimeoutParameters{ConnectTimeout: "infinite"}.Validate())
 }
 
 func TestTLSParametersValidation(t *testing.T) {
 	// Fallback certificate validation
-	assert.NoError(t, TLSParameters{
+	require.NoError(t, TLSParameters{
 		FallbackCertificate: NamespacedName{
 			Name:      "  ",
 			Namespace: "  ",
 		},
 	}.Validate())
-	assert.Error(t, TLSParameters{
+	require.Error(t, TLSParameters{
 		FallbackCertificate: NamespacedName{
 			Name:      "somename",
 			Namespace: "  ",
@@ -294,13 +251,13 @@ func TestTLSParametersValidation(t *testing.T) {
 	}.Validate())
 
 	// Client certificate validation
-	assert.NoError(t, TLSParameters{
+	require.NoError(t, TLSParameters{
 		ClientCertificate: NamespacedName{
 			Name:      "  ",
 			Namespace: "  ",
 		},
 	}.Validate())
-	assert.Error(t, TLSParameters{
+	require.Error(t, TLSParameters{
 		ClientCertificate: NamespacedName{
 			Name:      "",
 			Namespace: "somenamespace  ",
@@ -308,73 +265,54 @@ func TestTLSParametersValidation(t *testing.T) {
 	}.Validate())
 
 	// Cipher suites validation
-	assert.NoError(t, TLSParameters{
+	require.NoError(t, ProtocolParameters{
 		CipherSuites: []string{},
 	}.Validate())
-	assert.NoError(t, TLSParameters{
+	require.NoError(t, ProtocolParameters{
 		CipherSuites: []string{
 			"[ECDHE-ECDSA-AES128-GCM-SHA256|ECDHE-ECDSA-CHACHA20-POLY1305]",
 			"ECDHE-ECDSA-AES128-GCM-SHA256",
-			"[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]",
-			"ECDHE-RSA-AES128-GCM-SHA256",
-			"ECDHE-ECDSA-AES128-SHA",
-			" ECDHE-RSA-AES128-SHA   ",
-			"AES128-GCM-SHA256",
-			"AES128-SHA",
-			"ECDHE-ECDSA-AES256-GCM-SHA384",
-			"ECDHE-RSA-AES256-GCM-SHA384",
-			"ECDHE-ECDSA-AES256-SHA",
-			"ECDHE-RSA-AES256-SHA",
-			"AES256-GCM-SHA384",
-			"AES256-SHA",
 		},
 	}.Validate())
-	assert.Error(t, TLSParameters{
+	require.Error(t, ProtocolParameters{
 		CipherSuites: []string{
-			"[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]",
 			"NOTAVALIDCIPHER",
-			"AES128-GCM-SHA256",
 		},
 	}.Validate())
-}
 
-func TestSanitizeCipherSuites(t *testing.T) {
-	testCases := map[string]struct {
-		ciphers []string
-		want    []string
-	}{
-		"no ciphers": {
-			ciphers: nil,
-			want:    DefaultTLSCiphers,
-		},
-		"valid list": {
-			ciphers: []string{
-				"[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]",
-				"  ECDHE-RSA-AES128-SHA ",
-				"AES128-SHA",
-			},
-			want: []string{
-				"[ECDHE-RSA-AES128-GCM-SHA256|ECDHE-RSA-CHACHA20-POLY1305]",
-				"ECDHE-RSA-AES128-SHA",
-				"AES128-SHA",
-			},
-		},
-		"cipher duplicated": {
-			ciphers: []string{
-				"ECDHE-RSA-AES128-SHA",
-				"ECDHE-RSA-AES128-SHA",
-			},
-			want: []string{
-				"ECDHE-RSA-AES128-SHA",
-			},
-		},
-	}
-
-	for name, tc := range testCases {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, SanitizeCipherSuites(tc.ciphers))
-		})
-	}
+	// TLS protocol version validation
+	require.NoError(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.2",
+	}.Validate())
+	require.Error(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.1",
+	}.Validate())
+	require.NoError(t, ProtocolParameters{
+		MaximumProtocolVersion: "1.3",
+	}.Validate())
+	require.Error(t, ProtocolParameters{
+		MaximumProtocolVersion: "invalid",
+	}.Validate())
+	require.NoError(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.2",
+		MaximumProtocolVersion: "1.3",
+	}.Validate())
+	require.Error(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.3",
+		MaximumProtocolVersion: "1.2",
+	}.Validate())
+	require.NoError(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.2",
+		MaximumProtocolVersion: "1.2",
+	}.Validate())
+	require.NoError(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.3",
+		MaximumProtocolVersion: "1.3",
+	}.Validate())
+	require.Error(t, ProtocolParameters{
+		MinimumProtocolVersion: "1.1",
+		MaximumProtocolVersion: "1.3",
+	}.Validate())
 }
 
 func TestConfigFileValidation(t *testing.T) {
@@ -392,17 +330,20 @@ cluster:
 `)
 
 	check(`
-server:
-  xds-server-type: magic
+accesslog-format: /dev/null
 `)
 
 	check(`
-accesslog-format: /dev/null
+accesslog-format-string: "%REQ%"
 `)
 
 	check(`
 json-fields:
 - one
+`)
+
+	check(`
+accesslog-level: invalid
 `)
 
 	check(`
@@ -433,14 +374,16 @@ default-http-versions:
 - http/0.9
 `)
 
+	check(`
+listener:
+  connection-balancer: notexact
+`)
 }
 
 func TestConfigFileDefaultOverrideImport(t *testing.T) {
 	check := func(verifier func(*testing.T, *Parameters), yamlIn string) {
 		t.Helper()
-
 		conf, err := Parse(strings.NewReader(yamlIn))
-
 		require.NoError(t, err)
 		verifier(t, conf)
 	}
@@ -457,12 +400,8 @@ func TestConfigFileDefaultOverrideImport(t *testing.T) {
 incluster: false
 disablePermitInsecure: false
 disableAllowChunkedLength: false
-leaderelection:
-  configmap-name: leader-elect
-  configmap-namespace: projectcontour
-  lease-duration: 15s
-  renew-deadline: 10s
-  retry-period: 2s
+disableMergeSlashes: false
+serverHeaderTransformation: overwrite
 `,
 	)
 
@@ -474,41 +413,17 @@ tls:
 `)
 
 	check(func(t *testing.T, conf *Parameters) {
-		assert.Equal(t, "1.3", conf.TLS.MinimumProtocolVersion)
+		assert.Equal(t, "1.2", conf.TLS.MinimumProtocolVersion)
+		assert.Equal(t, "1.3", conf.TLS.MaximumProtocolVersion)
 		assert.Equal(t, TLSCiphers{"ECDHE-RSA-AES256-GCM-SHA384"}, conf.TLS.CipherSuites)
 	}, `
 tls:
-  minimum-protocol-version: 1.3
+  minimum-protocol-version: 1.2
+  maximum-protocol-version: 1.3
   cipher-suites:
   - ECDHE-RSA-AES256-GCM-SHA384
 `)
 
-	check(func(t *testing.T, conf *Parameters) {
-		assert.Equal(t, "foo", conf.LeaderElection.Name)
-		assert.Equal(t, "bar", conf.LeaderElection.Namespace)
-	}, `
-leaderelection:
-  configmap-name: foo
-  configmap-namespace: bar
-`)
-
-	check(func(t *testing.T, conf *Parameters) {
-		assert.Equal(t, conf.LeaderElection,
-			LeaderElectionParameters{
-				Name:          "foo",
-				Namespace:     "bar",
-				LeaseDuration: 600 * time.Second,
-				RenewDeadline: 500 * time.Second,
-				RetryPeriod:   60 * time.Second,
-			})
-	}, `
-leaderelection:
-  configmap-name: foo
-  configmap-namespace: bar
-  lease-duration: 600s
-  renew-deadline: 500s
-  retry-period: 60s
-`)
 	check(func(t *testing.T, conf *Parameters) {
 		assert.ElementsMatch(t,
 			[]HTTPVersionType{HTTPVersion1, HTTPVersion2, HTTPVersion2, HTTPVersion1},
@@ -529,59 +444,300 @@ network:
   num-trusted-hops: 1
   admin-port: 9001
 `)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.True(t, conf.Network.EnvoyStripTrailingHostDot)
+	}, `
+network:
+  strip-trailing-host-dot: true
+  num-trusted-hops: 0
+  admin-port: 9001
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(1)), conf.Listener.MaxRequestsPerConnection)
+	}, `
+listener:
+  max-requests-per-connection: 1
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(10)), conf.Listener.HTTP2MaxConcurrentStreams)
+	}, `
+listener:
+  http2-max-concurrent-streams: 10
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(1)), conf.Listener.PerConnectionBufferLimitBytes)
+	}, `
+listener:
+  per-connection-buffer-limit-bytes: 1
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(1)), conf.Listener.MaxRequestsPerIOCycle)
+	}, `
+listener:
+  max-requests-per-io-cycle: 1
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(1)), conf.Listener.MaxConnectionsPerListener)
+	}, `
+listener:
+  max-connections-per-listener: 1
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, ptr.To(uint32(1)), conf.Cluster.MaxRequestsPerConnection)
+	}, `
+cluster:
+  max-requests-per-connection: 1
+`)
+
+	check(func(t *testing.T, conf *Parameters) {
+		assert.Equal(t, uint32(42), conf.Cluster.GlobalCircuitBreakerDefaults.MaxConnections)
+		assert.Equal(t, uint32(43), conf.Cluster.GlobalCircuitBreakerDefaults.MaxPendingRequests)
+		assert.Equal(t, uint32(44), conf.Cluster.GlobalCircuitBreakerDefaults.MaxRequests)
+		assert.Equal(t, uint32(0), conf.Cluster.GlobalCircuitBreakerDefaults.MaxRetries)
+	}, `
+cluster:
+  circuit-breakers:
+    max-connections: 42
+    max-pending-requests: 43
+    max-requests: 44
+`)
 }
 
-func TestAccessLogFormatString(t *testing.T) {
-	errorCases := []string{
-		"%REQ=dog%\n",
-		"%dog(%\n",
-		"%REQ()%\n",
-		"%DOG%\n",
-		"my durations % are %DURATION%.0 and %REQ(:METHOD)%\n",
-		"%REQ%\n",
-		"%TRAILER%\n",
-		"%RESP%\n",
-		"%REQ_WITHOUT_QUERY%\n",
-		"%START_TIME(%s.%6f):10%\n",
-		"no newline at the end",
+func TestMetricsParametersValidation(t *testing.T) {
+	valid := MetricsParameters{
+		Contour: MetricsServerParameters{
+			Address: "0.0.0.0",
+			Port:    1234,
+		},
+		Envoy: MetricsServerParameters{
+			Address: "0.0.0.0",
+			Port:    1234,
+		},
 	}
+	require.NoError(t, valid.Validate())
 
-	for _, c := range errorCases {
-		assert.Error(t, validateAccessLogFormatString(c), c)
+	tlsValid := MetricsParameters{
+		Contour: MetricsServerParameters{
+			Address:    "0.0.0.0",
+			Port:       1234,
+			ServerCert: "cert.pem",
+			ServerKey:  "key.pem",
+		},
+		Envoy: MetricsServerParameters{
+			Address: "0.0.0.0",
+			Port:    1234,
+		},
 	}
+	require.NoError(t, valid.Validate())
+	assert.True(t, tlsValid.Contour.HasTLS())
+	assert.False(t, tlsValid.Envoy.HasTLS())
 
-	successCases := []string{
-		"%DURATION%.0\n",
-		"My duration %DURATION%.0\n",
-		"%START_TIME(%s.%6f)%\n",
-		"%REQ(X-CONTENT-ID)%\n",
-		"%REQ(X-CONTENT-ID):10%\n",
-		"%RESP(CONTENT-LENGTH):10%\n",
-		"%TRAILER(CONTENT-LENGTH):10%\n",
-		"my durations are %DURATION%.0 and method is %REQ(:METHOD)%\n",
-		"queries %REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)% removed\n",
-		"just a string\n",
+	tlsKeyMissing := MetricsParameters{
+		Contour: MetricsServerParameters{
+			Address:    "0.0.0.0",
+			Port:       1234,
+			ServerCert: "cert.pem",
+		},
+		Envoy: MetricsServerParameters{
+			Address: "0.0.0.0",
+			Port:    1234,
+		},
 	}
+	require.Error(t, tlsKeyMissing.Validate())
 
-	for _, c := range successCases {
-		assert.NoError(t, validateAccessLogFormatString(c), c)
+	tlsCAWithoutServerCert := MetricsParameters{
+		Contour: MetricsServerParameters{
+			Address: "0.0.0.0",
+			Port:    1234,
+		},
+		Envoy: MetricsServerParameters{
+			Address:  "0.0.0.0",
+			Port:     1234,
+			CABundle: "ca.pem",
+		},
 	}
+	require.Error(t, tlsCAWithoutServerCert.Validate())
 }
 
-// TestAccessLogFormatExtensions tests that command operators requiring extensions are recognized for given access log format.
-func TestAccessLogFormatExtensions(t *testing.T) {
-	p1 := Parameters{
-		AccessLogFormat:       EnvoyAccessLog,
-		AccessLogFormatString: "[%START_TIME%] \"%REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)%\"\n",
+func TestListenerValidation(t *testing.T) {
+	var l *ListenerParameters
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		ConnectionBalancer: "",
 	}
-	assert.Equal(t, []string{"envoy.formatter.req_without_query"}, p1.AccessLogFormatterExtensions())
-
-	p2 := Parameters{
-		AccessLogFormat: JSONAccessLog,
-		AccessLogFields: []string{"@timestamp", "path=%REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)%"},
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		ConnectionBalancer: "exact",
 	}
-	assert.Equal(t, []string{"envoy.formatter.req_without_query"}, p2.AccessLogFormatterExtensions())
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		ConnectionBalancer: "invalid",
+	}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{
+		MaxRequestsPerConnection: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		MaxRequestsPerConnection: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{
+		PerConnectionBufferLimitBytes: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		PerConnectionBufferLimitBytes: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{
+		MaxRequestsPerIOCycle: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		MaxRequestsPerIOCycle: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{
+		HTTP2MaxConcurrentStreams: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		HTTP2MaxConcurrentStreams: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{
+		SocketOptions: SocketOptions{
+			TOS:          64,
+			TrafficClass: 64,
+		},
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{SocketOptions: SocketOptions{TOS: 256}}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{SocketOptions: SocketOptions{TrafficClass: 256}}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{SocketOptions: SocketOptions{TOS: -1}}
+	require.Error(t, l.Validate())
+	l = &ListenerParameters{SocketOptions: SocketOptions{TrafficClass: -1}}
+	require.Error(t, l.Validate())
 
-	p3 := Defaults()
-	assert.Empty(t, p3.AccessLogFormatterExtensions())
+	l = &ListenerParameters{
+		MaxConnectionsPerListener: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ListenerParameters{
+		MaxConnectionsPerListener: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+}
+
+func TestClusterParametersValidation(t *testing.T) {
+	var l *ClusterParameters
+	l = &ClusterParameters{
+		MaxRequestsPerConnection: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ClusterParameters{
+		MaxRequestsPerConnection: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+	l = &ClusterParameters{
+		PerConnectionBufferLimitBytes: ptr.To(uint32(0)),
+	}
+	require.Error(t, l.Validate())
+	l = &ClusterParameters{
+		UpstreamTLS: ProtocolParameters{
+			MaximumProtocolVersion: "invalid",
+		},
+	}
+	require.Error(t, l.Validate())
+	l = &ClusterParameters{
+		PerConnectionBufferLimitBytes: ptr.To(uint32(1)),
+	}
+	require.NoError(t, l.Validate())
+}
+
+func TestTracingConfigValidation(t *testing.T) {
+	var trace *Tracing
+	require.NoError(t, trace.Validate())
+
+	trace = &Tracing{
+		IncludePodDetail: ptr.To(false),
+		ServiceName:      ptr.To("contour"),
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags:       nil,
+		ExtensionService: "projectcontour/otel-collector",
+	}
+	require.NoError(t, trace.Validate())
+
+	trace = &Tracing{
+		IncludePodDetail: ptr.To(false),
+		ServiceName:      ptr.To("contour"),
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags:       nil,
+	}
+	require.Error(t, trace.Validate())
+
+	trace = &Tracing{
+		IncludePodDetail: ptr.To(false),
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags:       nil,
+		ExtensionService: "projectcontour/otel-collector",
+	}
+	require.NoError(t, trace.Validate())
+
+	trace = &Tracing{
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags: []CustomTag{
+			{
+				TagName:           "first",
+				Literal:           "literal",
+				RequestHeaderName: ":path",
+			},
+		},
+		ExtensionService: "projectcontour/otel-collector",
+	}
+	require.Error(t, trace.Validate())
+
+	trace = &Tracing{
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags: []CustomTag{
+			{
+				Literal: "literal",
+			},
+		},
+		ExtensionService: "projectcontour/otel-collector",
+	}
+	require.Error(t, trace.Validate())
+
+	trace = &Tracing{
+		IncludePodDetail: ptr.To(true),
+		OverallSampling:  ptr.To("100"),
+		MaxPathTagLength: ptr.To(uint32(256)),
+		CustomTags: []CustomTag{
+			{
+				TagName: "first",
+				Literal: "literal",
+			},
+			{
+				TagName:           "first",
+				RequestHeaderName: ":path",
+			},
+		},
+		ExtensionService: "projectcontour/otel-collector",
+	}
+	require.Error(t, trace.Validate())
 }

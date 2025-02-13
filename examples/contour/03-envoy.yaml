@@ -16,10 +16,6 @@ spec:
       app: envoy
   template:
     metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8002"
-        prometheus.io/path: "/stats/prometheus"
       labels:
         app: envoy
     spec:
@@ -38,12 +34,6 @@ spec:
                 - /bin/contour
                 - envoy
                 - shutdown
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8090
-          initialDelaySeconds: 3
-          periodSeconds: 10
         name: shutdown-manager
         volumeMounts:
           - name: envoy-admin
@@ -56,7 +46,7 @@ spec:
         - --log-level info
         command:
         - envoy
-        image: docker.io/envoyproxy/envoy:v1.19.1
+        image: docker.io/envoyproxy/envoy:v1.32.3
         imagePullPolicy: IfNotPresent
         name: envoy
         env:
@@ -78,6 +68,10 @@ spec:
         - containerPort: 8443
           hostPort: 443
           name: https
+          protocol: TCP
+        - containerPort: 8002
+          hostPort: 8002
+          name: metrics
           protocol: TCP
         readinessProbe:
           httpGet:
@@ -139,3 +133,7 @@ spec:
           secret:
             secretName: envoycert
       restartPolicy: Always
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
